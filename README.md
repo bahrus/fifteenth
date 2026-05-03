@@ -15,7 +15,7 @@ This package defines a common language for "resource management", where the reso
 ## One-time pull of a single resource:
 
 ```JavaScript
-import {get} from 'trans-render/XV/get.js';
+import {get} from 'fifteenth/get.js';
 const currentVal = await get('indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject');
 ```
 
@@ -50,7 +50,7 @@ It will prove useful to give names to parts of the strings, just as it is useful
 ## One-time push of single resource:
 
 ```JavaScript
-import {set} from 'trans-render/XV/set.js';
+import {set} from 'fifteenth/set.js';
 await set('indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject', currentVal);
 ```
 
@@ -66,7 +66,7 @@ window.postMessage([
 ## Wait for value to appear:
 
 ```JavaScript
-import {gait} from 'trans-render/XV/gait.js';
+import {gait} from 'fifteenth/gait.js';
 const currentVal = await gait('indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject');
 ```
 
