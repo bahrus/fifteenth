@@ -44,6 +44,15 @@ jspm_packages/
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 
+# TypeScript compiled output (source is .ts, tsc emits .js and .d.ts)
+# Root-level compiled files
+/get.js
+/get.d.ts
+/parse.js
+/parse.d.ts
+/idb.js
+/idb.d.ts
+
 # TypeScript cache
 *.tsbuildinfo
 

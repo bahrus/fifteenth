@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>fifteenth — get() tests</title>
+    <script type="importmap">
+        {
+            "imports": {
+                "fifteenth/": "/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="test-complete"></div>
+    <script type="module">
+        import { get } from 'fifteenth/get.js';
+
+        const results = [];
+        let passed = 0;
+        let failed = 0;
+
+        async function test(name, fn) {
+            try {
+                await fn();
+                passed++;
+                results.push(`PASS: ${name}`);
+            } catch (e) {
+                failed++;
+                results.push(`FAIL: ${name} — ${e.message || e}`);
+            }
+        }
+
+        function assert(actual, expected, msg) {
+            if (actual !== expected) {
+                throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        function assertDeep(actual, expected, msg) {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+                throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        // ---- globalThis ----
+
+        await test('globalThis: read nested property', async () => {
+            globalThis.__fifteenthTest = { nested: 42 };
+            const val = await get('globalThis://__fifteenthTest/nested');
+            assert(val, 42, 'nested global');
+            delete globalThis.__fifteenthTest;
+        });
+
+        await test('globalThis: read non-existent returns null', async () => {
+            const val = await get('globalThis://__fifteenthNonExistent');
+            assert(val, null, 'non-existent global');
+        });
+
+        // ---- localStorage ----
+
+        await test('localStorage: read string value', async () => {
+            localStorage.setItem('fifteenth-test-str', 'hello');
+            const val = await get('localStorage://fifteenth-test-str');
+            assert(val, 'hello', 'localStorage string');
+            localStorage.removeItem('fifteenth-test-str');
+        });
+
+        await test('localStorage: read JSON object', async () => {
+            localStorage.setItem('fifteenth-test-obj', JSON.stringify({ a: 1, b: 2 }));
+            const val = await get('localStorage://fifteenth-test-obj');
+            assertDeep(val, { a: 1, b: 2 }, 'localStorage JSON');
+            localStorage.removeItem('fifteenth-test-obj');
+        });
+
+        await test('localStorage: non-existent key returns null', async () => {
+            const val = await get('localStorage://fifteenth-nonexistent-key');
+            assert(val, null, 'localStorage missing');
+        });
+
+        await test('localStorage: with accessor chain', async () => {
+            localStorage.setItem('fifteenth-test-deep', JSON.stringify({ person: { name: 'Alice' } }));
+            const val = await get('localStorage://fifteenth-test-deep?.person?.name');
+            assert(val, 'Alice', 'localStorage accessor chain');
+            localStorage.removeItem('fifteenth-test-deep');
+        });
+
+        // ---- sessionStorage ----
+
+        await test('sessionStorage: read string value', async () => {
+            sessionStorage.setItem('fifteenth-test-ss', 'world');
+            const val = await get('sessionStorage://fifteenth-test-ss');
+            assert(val, 'world', 'sessionStorage string');
+            sessionStorage.removeItem('fifteenth-test-ss');
+        });
+
+        await test('sessionStorage: non-existent key returns null', async () => {
+            const val = await get('sessionStorage://fifteenth-nonexistent-ss');
+            assert(val, null, 'sessionStorage missing');
+        });
+
+        // ---- cookie ----
+
+        await test('cookie: read cookie value', async () => {
+            document.cookie = 'fifteenth-test-cookie=testval; path=/';
+            const val = await get('cookie://fifteenth-test-cookie');
+            assert(val, 'testval', 'cookie read');
+            // clean up
+            document.cookie = 'fifteenth-test-cookie=; path=/; max-age=0';
+        });
+
+        await test('cookie: non-existent cookie returns null', async () => {
+            const val = await get('cookie://fifteenth-nonexistent-cookie');
+            assert(val, null, 'cookie missing');
+        });
+
+        // ---- locationHash ----
+
+        await test('locationHash: read from hash', async () => {
+            const origHash = location.hash;
+            location.hash = 'fifteenth-hkey=hashval';
+            const val = await get('locationHash://fifteenth-hkey');
+            assert(val, 'hashval', 'locationHash read');
+            location.hash = origHash;
+        });
+
+        // ---- indexedDB ----
+
+        await test('indexedDB: read stored value', async () => {
+            // Set up: write a value directly using the idb helper
+            const { IDBObjectStore } = await import('/idb.js');
+            const store = new IDBObjectStore('fifteenth-test-db', 'fifteenth-test-store');
+            await store.open();
+            await store.put('testKey', { greeting: 'hello' });
+            store.close();
+
+            const val = await get('indexedDB://fifteenth-test-db/fifteenth-test-store/testKey');
+            assertDeep(val, { greeting: 'hello' }, 'indexedDB read');
+
+            // Clean up
+            indexedDB.deleteDatabase('fifteenth-test-db');
+        });
+
+        await test('indexedDB: with accessor chain', async () => {
+            const { IDBObjectStore } = await import('/idb.js');
+            const store = new IDBObjectStore('fifteenth-test-db2', 'fifteenth-test-store2');
+            await store.open();
+            await store.put('deepKey', { person: { address: { zip: '90210' } } });
+            store.close();
+
+            const val = await get('indexedDB://fifteenth-test-db2/fifteenth-test-store2/deepKey?.person?.address?.zip');
+            assert(val, '90210', 'indexedDB accessor chain');
+
+            indexedDB.deleteDatabase('fifteenth-test-db2');
+        });
+
+        await test('indexedDB: non-existent key returns null', async () => {
+            const { IDBObjectStore } = await import('/idb.js');
+            const store = new IDBObjectStore('fifteenth-test-db3', 'fifteenth-test-store3');
+            await store.open();
+            store.close();
+
+            const val = await get('indexedDB://fifteenth-test-db3/fifteenth-test-store3/noSuchKey');
+            assert(val, null, 'indexedDB missing');
+
+            indexedDB.deleteDatabase('fifteenth-test-db3');
+        });
+
+        // ---- accessor chain on null ----
+
+        await test('accessor chain on null value returns null', async () => {
+            const val = await get('localStorage://fifteenth-nonexistent?.deep?.path');
+            assert(val, null, 'accessor on null');
+        });
+
+        // ---- Report results ----
+
+        const el = document.getElementById('test-complete');
+        if (failed === 0) {
+            el.textContent = `All ${passed} tests passed`;
+        } else {
+            el.textContent = `${failed} of ${passed + failed} tests failed:\n${results.filter(r => r.startsWith('FAIL')).join('\n')}`;
+        }
+        el.setAttribute('data-status', failed === 0 ? 'pass' : 'fail');
+        console.log(results.join('\n'));
+    </script>
+</body>
+</html>

@@ -29,11 +29,15 @@ Notice that fifteenth has a legacy folder that has a previous implementation of 
    - `@types/node` — Node type definitions
    - `typescript` — TypeScript compiler
 
-4. **tsconfig.json** — ESNext target/module, strict mode
+4. **tsconfig.json** — ESNext target/module, strict mode, `declaration: true` for auto-generated `.d.ts`
+   - Source is TypeScript (`.ts`), compiled to `.js` via `tsc`
+   - Compiled output is gitignored
+   - Excludes `legacy/`, `tests/`, and `playwright.config.ts`
 
 5. **package.json scripts**:
+   - `npm run build` — compiles TypeScript to JavaScript
    - `npm run serve` — starts spa-ssi dev server
-   - `npm test` — runs playwright tests
+   - `npm test` — builds then runs playwright tests
    - `npm run update` — updates all deps via ncu
 
 ### Project overview

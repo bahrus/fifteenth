@@ -2,6 +2,7 @@
 	"compilerOptions": {
 		"target": "ESNext",
 		"module": "ESNext",
+		"declaration": true,
 		"sourceMap": false,
 		"experimentalDecorators": false,
 		"newLine": "LF",
@@ -13,6 +14,9 @@
 		"types/global.d.ts"
 	],
 	"exclude": [
-		"node_modules/*"
+		"node_modules",
+		"legacy",
+		"tests",
+		"playwright.config.ts"
 	]
 }

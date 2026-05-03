@@ -26,16 +26,18 @@ const tagName = element.localName;
 if (tagName === 'input') { /* ... */ }
 ```
 
-## JavaScript Module Conventions
+## Module Conventions
 
 ### File Extensions
-- Use `*.js` files for all browser-executable code
-- Use `*.ts` files for type declarations alongside `.js` files
+- Use `*.ts` files for all source code — TypeScript is compiled to JS via `tsc`
 - The project uses `"type": "module"` in package.json (ES modules)
+- Use `.js` extensions in import paths (TypeScript resolves these to `.ts` sources)
+- Compiled `.js` and `.d.ts` output is gitignored
 
-### TypeScript Support
-- Use JSDoc comments for type annotations in `.js` files when needed
-- Leverage type definitions from the `types` submodule
+### Build
+- `npm run build` compiles TypeScript to JavaScript
+- `npm test` runs build then Playwright tests
+- `tsconfig.json` has `"declaration": true` for auto-generated `.d.ts` files
 
 ## When to Use Each Property
 
