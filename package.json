@@ -1,0 +1,20 @@
+{
+  "name": "xvth",
+  "version": "0.0.0",
+  "description": "The fifteenth standard",
+  "homepage": "https://github.com/bahrus/xvth#readme",
+  "bugs": {
+    "url": "https://github.com/bahrus/xvth/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bahrus/xvth.git"
+  },
+  "license": "MIT",
+  "author": "Bruce B. Anderson <anderson.bruce.b@gmail.com>",
+  "type": "module",
+  "main": "xv.js",
+  "scripts": {
+    "test": "playwright test"
+  }
+}
