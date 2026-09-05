@@ -107,3 +107,73 @@ What fifteenth explicitly does **not** own: the outer USL string grammar, object
 - Decide the array-result + accessor-chain question from §2 before building the tabular protocols.
 - Confirm whether assign-gingerly will expose its USL tokenizer as an importable primitive — that decision determines whether `parse.ts` stays here.
 - The `legacy/XV` code still imports types from `trans-render/XV/types.js`. If those types (`USL`, `ParsedUSL`, `SavingContext`, `WrapperConfig`) are part of the migration, they should land in this package or the `types` submodule, not stay pointed back at trans-render.
+
+## Bruce's Response
+
+> - Confirm whether assign-gingerly will expose its USL tokenizer as an importable primitive — that decision determines whether `parse.ts` stays here.
+
+Can you please outline below what existing (or slightly enhanced existing) code that assign-gingerly currently has that could be made exportable, that would be helpful to this package?  I will then take that recommendation to the assign-gingerly package and make it so.
+
+## Claude's Response (re: exportable primitives)
+
+I read through `resolve/getValues.ts` and `resolve/resolveValues.ts` on the `baseline` branch. The outer-grammar logic fifteenth would otherwise duplicate already exists there — but it's trapped inside two private, near-identical functions: `getProtocolValue` (sync, in `getValues.ts`) and `resolveProtocolValue` (async, in `resolveValues.ts`). Both do the same three-line dance:
+
+```ts
+const protoEnd = value.indexOf('://');
+const protocol = value.substring(0, protoEnd);
+const rest    = value.substring(protoEnd + 3);
+const pathStart = rest.indexOf('?.');
+const key  = pathStart === -1 ? rest : rest.substring(0, pathStart);
+const path = pathStart === -1 ? null : rest.substring(pathStart);
+```
+
+### 1. (Must) Extract that into one exported pure function
+
+New tiny module, e.g. `resolve/parseProtocolRef.ts`:
+
+```ts
+export interface ParsedProtocolRef {
+    protocol: string;        // '' when there is no '://'
+    key: string;             // between '://' and the first '?.'
+    path: string | null;     // from '?.' onward (starts with '?.'), or null
+}
+
+export function parseProtocolRef(value: string): ParsedProtocolRef;
+export function hasProtocol(value: string): boolean;   // value.includes('://')
+```
+
+Then refactor `getProtocolValue` and `resolveProtocolValue` to *call* it (dedupes them — pure win for assign-gingerly too), and re-export `parseProtocolRef` / `hasProtocol` from `index.ts`.
+
+**Why fifteenth needs it:** when fifteenth is used *through* `assignFrom({ protocols })` it never parses anything — it just supplies handlers. But fifteenth also ships its own sugar (`get(usl)`, `set(usl)`, `gait(usl)`, `Wrapper`, `@source`) that takes a full USL string. Those entry points should split the outer grammar with assign-gingerly's exact rules, not a private `parse.ts` copy that silently drifts. It's only ~8 lines of logic, but making it the single source of truth means if the delimiter ever changes or `?.`-escaping gets added, fifteenth inherits it for free.
+
+### 2. (Should) Export named types for the protocol bag
+
+Right now the handler map is typed inline as `Record<string, (key: string) => any | Promise<any>>` in both files. Give it a name so fifteenth can type its exported bag against assign-gingerly's own definition:
+
+```ts
+export type ProtocolHandler  = (key: string) => any | Promise<any>;
+export type ProtocolHandlers = Record<string, ProtocolHandler>;
+```
+
+Keep `GetValuesOptions` / `ResolveValuesOptions` exported as types (they already are).
+
+### 3. (Nice) Export the async single-value resolver
+
+`resolveValue` is exported today, but it's just `getValue` — sync, and it does **not** handle protocols. There is no exported "resolve one protocol string (possibly async) to one value." That is exactly fifteenth's `get(usl)`. Two ways:
+
+- assign-gingerly exports `resolveProtocolValue(value, protocols, options)` as-is, or
+- fifteenth builds `get()` from `parseProtocolRef` + its own bag + `getValue` for the `?.` tail (~10 lines).
+
+Either is fine. If item 1 lands, fifteenth doing it itself is trivial, so treat this as optional.
+
+### 4. (Confirm only — no change) `getValue` / `getValues` deep import
+
+The `getValues.ts` JSDoc already advertises `import { getValues, getValue } from 'assign-gingerly/getValues.js'`. fifteenth will use `getValue` to resolve the `?.` tail inside its own `get()`. Just confirm that deep path stays a supported public entry point.
+
+### 5. (Optional — probably skip) Write-side path traversal
+
+`evaluatePathWithAsyncMethods` walks a `?.` path, creates missing intermediate objects, and returns `{ target, lastKey }` so a caller can do `target[lastKey] = value`. That is what fifteenth's `set()` needs for the "write into a sub-property of a stored object" case (`localStorage://myKey?.mySubObject`). But it's currently entangled with `withMethods` / `withAsyncMethods` / `permissionProcessor` machinery fifteenth has no use for, and the fallback is ~6 hand-rolled lines. Only worth exporting a clean sync `evaluatePathWithMethods` → `{ target, lastKey }` if you want byte-identical create-on-write semantics across both packages. Otherwise skip.
+
+### Bottom line for the assign-gingerly ask
+
+Just **item 1** (`parseProtocolRef` + `hasProtocol`, exported, with the two internal call sites refactored to use it) plus **item 2** (named `ProtocolHandler(s)` types). Those two together let fifteenth delete its `parse.ts` and define the outer USL grammar in exactly one place. Everything else fifteenth can do locally.
