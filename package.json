@@ -24,6 +24,10 @@
       "types": "./get.ts",
       "default": "./get.js"
     },
+    "./set.js": {
+      "types": "./set.ts",
+      "default": "./set.js"
+    },
     "./protocols.js": {
       "types": "./protocols.ts",
       "default": "./protocols.js"

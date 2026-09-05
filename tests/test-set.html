@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>fifteenth — set() tests</title>
+    <script type="importmap">
+        {
+            "imports": {
+                "fifteenth/": "/",
+                "assign-gingerly/": "/node_modules/assign-gingerly/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="test-complete"></div>
+    <script type="module">
+        import { set } from 'fifteenth/set.js';
+        import { get } from 'fifteenth/get.js';
+
+        const results = [];
+        let passed = 0;
+        let failed = 0;
+
+        async function test(name, fn) {
+            try {
+                await fn();
+                passed++;
+                results.push(`PASS: ${name}`);
+            } catch (e) {
+                failed++;
+                results.push(`FAIL: ${name} — ${e.message || e}`);
+            }
+        }
+
+        function assert(actual, expected, msg) {
+            if (actual !== expected) {
+                throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        function assertDeep(actual, expected, msg) {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+                throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        /** Resolve with the next window message whose payload contains `needle`. */
+        function nextMessageContaining(needle) {
+            return new Promise((resolve) => {
+                function onMsg(e) {
+                    if (Array.isArray(e.data) && e.data.includes(needle)) {
+                        window.removeEventListener('message', onMsg);
+                        resolve(e.data);
+                    }
+                }
+                window.addEventListener('message', onMsg);
+            });
+        }
+
+        // ---- globalThis ----
+
+        await test('globalThis: creates intermediate objects', async () => {
+            delete globalThis.__setTest;
+            await set('globalThis://__setTest/a/b', 42);
+            assert(globalThis.__setTest.a.b, 42, 'nested global written');
+            delete globalThis.__setTest;
+        });
+
+        await test('globalThis: existing siblings are preserved', async () => {
+            globalThis.__setTest2 = { a: { keep: 1 } };
+            await set('globalThis://__setTest2/a/b', 2);
+            assertDeep(globalThis.__setTest2, { a: { keep: 1, b: 2 } }, 'sibling preserved');
+            delete globalThis.__setTest2;
+        });
+
+        await test('globalThis: accessor chain after the key', async () => {
+            delete globalThis.__setTest3;
+            await set('globalThis://__setTest3?.a?.b', 'x');
+            assert(globalThis.__setTest3.a.b, 'x', 'chain after key');
+            delete globalThis.__setTest3;
+        });
+
+        // ---- localStorage ----
+
+        await test('localStorage: string value, no chain', async () => {
+            await set('localStorage://set-str', 'hello');
+            assert(await get('localStorage://set-str'), 'hello', 'string round-trip');
+            localStorage.removeItem('set-str');
+        });
+
+        await test('localStorage: object value, no chain', async () => {
+            await set('localStorage://set-obj', { a: 1, b: 2 });
+            assertDeep(await get('localStorage://set-obj'), { a: 1, b: 2 }, 'object round-trip');
+            localStorage.removeItem('set-obj');
+        });
+
+        await test('localStorage: accessor chain creates nested object', async () => {
+            localStorage.removeItem('set-deep');
+            await set('localStorage://set-deep?.a?.b', 9);
+            assertDeep(await get('localStorage://set-deep'), { a: { b: 9 } }, 'chain create');
+            localStorage.removeItem('set-deep');
+        });
+
+        await test('localStorage: accessor chain merges, does not clobber siblings', async () => {
+            localStorage.setItem('set-merge', JSON.stringify({ a: { keep: 1 }, other: true }));
+            await set('localStorage://set-merge?.a?.b', 9);
+            assertDeep(
+                await get('localStorage://set-merge'),
+                { a: { keep: 1, b: 9 }, other: true },
+                'chain merge'
+            );
+            localStorage.removeItem('set-merge');
+        });
+
+        await test('localStorage: exact path match overwrites', async () => {
+            localStorage.setItem('set-exact', JSON.stringify({ a: { b: 1 } }));
+            await set('localStorage://set-exact?.a?.b', 2);
+            assertDeep(await get('localStorage://set-exact'), { a: { b: 2 } }, 'exact overwrite');
+            localStorage.removeItem('set-exact');
+        });
+
+        // ---- sessionStorage ----
+
+        await test('sessionStorage: round-trips through get()', async () => {
+            await set('sessionStorage://set-ss?.x', 'y');
+            assert(await get('sessionStorage://set-ss?.x'), 'y', 'sessionStorage chain');
+            sessionStorage.removeItem('set-ss');
+        });
+
+        // ---- cookie ----
+
+        await test('cookie: string value round-trips', async () => {
+            await set('cookie://set-cookie', 'tasty');
+            assert(await get('cookie://set-cookie'), 'tasty', 'cookie round-trip');
+            document.cookie = 'set-cookie=; path=/; max-age=0';
+        });
+
+        await test('cookie: accessor chain is rejected', async () => {
+            let threw = false;
+            try {
+                await set('cookie://set-cookie?.a', 'z');
+            } catch {
+                threw = true;
+            }
+            assert(threw, true, 'cookie chain throws');
+        });
+
+        // ---- locationHash ----
+
+        await test('locationHash: writes a key, leaves others intact', async () => {
+            location.hash = 'keep=me';
+            await set('locationHash://set-h', 'there');
+            assert(await get('locationHash://set-h'), 'there', 'hash write');
+            assert(await get('locationHash://keep'), 'me', 'other hash key intact');
+            location.hash = '';
+        });
+
+        // ---- indexedDB ----
+
+        await test('indexedDB: object value, no chain', async () => {
+            await set('indexedDB://set-db/set-store/k', { greeting: 'hi' });
+            assertDeep(
+                await get('indexedDB://set-db/set-store/k'),
+                { greeting: 'hi' },
+                'indexedDB round-trip'
+            );
+            indexedDB.deleteDatabase('set-db');
+        });
+
+        await test('indexedDB: accessor chain creates and merges', async () => {
+            const { IDBObjectStore } = await import('/idb.js');
+            const store = new IDBObjectStore('set-db2', 'set-store2');
+            await store.open();
+            await store.put('rec', { person: { name: 'Ada' } });
+            store.close();
+
+            await set('indexedDB://set-db2/set-store2/rec?.person?.zip', '10101');
+            assertDeep(
+                await get('indexedDB://set-db2/set-store2/rec'),
+                { person: { name: 'Ada', zip: '10101' } },
+                'indexedDB chain merge'
+            );
+            indexedDB.deleteDatabase('set-db2');
+        });
+
+        // ---- change broadcast ----
+
+        await test('set() broadcasts [usp, usl] when a chain is used', async () => {
+            const got = nextMessageContaining('localStorage://set-msg?.a?.b');
+            await set('localStorage://set-msg?.a?.b', 1);
+            const data = await got;
+            assertDeep(data, ['localStorage://set-msg', 'localStorage://set-msg?.a?.b'], 'broadcast shape');
+            localStorage.removeItem('set-msg');
+        });
+
+        await test('set() broadcasts [usp] when no chain is used', async () => {
+            const got = nextMessageContaining('localStorage://set-msg2');
+            await set('localStorage://set-msg2', 1);
+            const data = await got;
+            assertDeep(data, ['localStorage://set-msg2'], 'broadcast shape (no chain)');
+            localStorage.removeItem('set-msg2');
+        });
+
+        await test('SavingContext collects USLs instead of broadcasting', async () => {
+            let posted = false;
+            function spy(e) { if (Array.isArray(e.data) && e.data.includes('localStorage://set-ctx')) posted = true; }
+            window.addEventListener('message', spy);
+
+            const ctx = { usls: new Set() };
+            await set('localStorage://set-ctx?.a', 1, ctx);
+            await set('localStorage://set-ctx?.b', 2, ctx);
+
+            // give any stray message a tick to land
+            await new Promise(r => setTimeout(r, 50));
+            window.removeEventListener('message', spy);
+
+            assert(posted, false, 'nothing broadcast with a context');
+            assertDeep(
+                [...ctx.usls].sort(),
+                ['localStorage://set-ctx', 'localStorage://set-ctx?.a', 'localStorage://set-ctx?.b'],
+                'context accumulated USLs'
+            );
+            localStorage.removeItem('set-ctx');
+        });
+
+        // ---- Report results ----
+
+        const el = document.getElementById('test-complete');
+        if (failed === 0) {
+            el.textContent = `All ${passed} tests passed`;
+        } else {
+            el.textContent = `${failed} of ${passed + failed} tests failed:\n${results.filter(r => r.startsWith('FAIL')).join('\n')}`;
+        }
+        el.setAttribute('data-status', failed === 0 ? 'pass' : 'fail');
+        console.log(results.join('\n'));
+    </script>
+</body>
+</html>

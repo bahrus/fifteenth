@@ -75,21 +75,45 @@ It will prove useful to give names to parts of the strings, just as it is useful
 |  ?.mySubject?.mySubSubObject                                  |  Chained accessor             |                                            |
 |  indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject    |  Uniform Source Locator (USL) |                                            |
 
-## One-time push of single resource:
+## One-time push of single resource
 
 ```JavaScript
 import {set} from 'fifteenth/set.js';
 await set('indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject', currentVal);
 ```
 
-Fires:
+When the USL carries a `?.` accessor chain, `set` reads the stored value, merges
+the chain into it and writes the whole thing back — the same create-on-write
+semantics as assign-gingerly: missing intermediate objects are created, existing
+ones are descended into (never replaced), and only the exact leaf is
+overwritten. Without a chain, `val` is stored as-is.
+
+On completion it broadcasts the change so subscribers can react:
 
 ```JavaScript
 window.postMessage([
-    'indexedDB://myDB/myStore/myKey',
-    'indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject'
+    'indexedDB://myDB/myStore/myKey',                              // the USP
+    'indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject'    // the full USL
 ])
 ```
+
+The message is an array: `[usp]` when no accessor chain was used, `[usp, usl]`
+when one was. To coalesce a batch of writes into a single broadcast, pass a
+saving context — `set` then records the strings instead of posting, and the
+batch driver posts once at the end:
+
+```JavaScript
+const ctx = { usls: new Set() };
+await set('localStorage://prefs?.theme', 'dark', ctx);
+await set('localStorage://prefs?.density', 'compact', ctx);
+window.postMessage([...ctx.usls]);
+```
+
+Per protocol: `globalThis`, `localStorage`, `sessionStorage` and `indexedDB`
+hold structured values and support the accessor chain; `cookie` and
+`locationHash` hold plain strings and reject one. Non-string values written to
+`cookie` / `locationHash` are JSON-encoded (and are *not* JSON-decoded on
+`get`).
 
 ## Wait for value to appear:
 
