@@ -6,7 +6,8 @@
     <script type="importmap">
         {
             "imports": {
-                "fifteenth/": "/"
+                "fifteenth/": "/",
+                "assign-gingerly/": "/node_modules/assign-gingerly/"
             }
         }
     </script>
@@ -15,6 +16,8 @@
     <div id="test-complete"></div>
     <script type="module">
         import { get } from 'fifteenth/get.js';
+        import { protocols } from 'fifteenth/protocols.js';
+        import { resolveValues } from 'assign-gingerly/resolve/resolveValues.js';
 
         const results = [];
         let passed = 0;
@@ -171,6 +174,53 @@
         await test('accessor chain on null value returns null', async () => {
             const val = await get('localStorage://fifteenth-nonexistent?.deep?.path');
             assert(val, null, 'accessor on null');
+        });
+
+        await test('globalThis: accessor chain resolves against handler result', async () => {
+            globalThis.__fifteenthChain = { a: { b: 7 } };
+            const val = await get('globalThis://__fifteenthChain?.a?.b');
+            assert(val, 7, 'globalThis accessor chain');
+            delete globalThis.__fifteenthChain;
+        });
+
+        // ---- protocols bag (assign-gingerly integration) ----
+
+        await test('protocols bag: resolveValues pulls from multiple stores', async () => {
+            localStorage.setItem('fifteenth-bag-ls', JSON.stringify({ theme: 'dark' }));
+            sessionStorage.setItem('fifteenth-bag-ss', 'sess');
+            globalThis.__fifteenthBag = { count: 3 };
+
+            const out = await resolveValues({
+                theme: 'localStorage://fifteenth-bag-ls?.theme',
+                sess: 'sessionStorage://fifteenth-bag-ss',
+                count: 'globalThis://__fifteenthBag?.count',
+                literal: 'kept as-is',
+            }, {}, { protocols });
+
+            assertDeep(
+                out,
+                { theme: 'dark', sess: 'sess', count: 3, literal: 'kept as-is' },
+                'resolveValues via protocols bag'
+            );
+
+            localStorage.removeItem('fifteenth-bag-ls');
+            sessionStorage.removeItem('fifteenth-bag-ss');
+            delete globalThis.__fifteenthBag;
+        });
+
+        await test('protocols bag: async indexedDB handler through resolveValues', async () => {
+            const { IDBObjectStore } = await import('/idb.js');
+            const store = new IDBObjectStore('fifteenth-bag-db', 'fifteenth-bag-store');
+            await store.open();
+            await store.put('rec', { person: { zip: '10101' } });
+            store.close();
+
+            const out = await resolveValues({
+                zip: 'indexedDB://fifteenth-bag-db/fifteenth-bag-store/rec?.person?.zip',
+            }, {}, { protocols });
+            assertDeep(out, { zip: '10101' }, 'indexedDB via protocols bag');
+
+            indexedDB.deleteDatabase('fifteenth-bag-db');
         });
 
         // ---- Report results ----

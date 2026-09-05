@@ -19,22 +19,50 @@ import {get} from 'fifteenth/get.js';
 const currentVal = await get('indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject');
 ```
 
-returns null if not found.
+Returns `null` if the resource — or any link in the `?.` accessor chain — is not
+found. The chain is resolved by assign-gingerly's `getValue`, so it behaves
+exactly as it would inside `resolveValues` / `assignFromAsync`.
 
-## One-time pull of multiple resources: 
+## One-time pull of multiple resources
+
+There is no dedicated `drawFrom` in this package — that job is now done by
+[assign-gingerly's protocol resolution](https://github.com/bahrus/assign-gingerly#protocol-resolution-in-getvalues-and-assignfrom).
+`fifteenth` supplies the storage-specific handlers as a ready-made `protocols`
+bag; assign-gingerly owns the outer USL grammar (the `protocol://` split and the
+`?.` accessor chain).
 
 ```JavaScript
-import {draw} from 'fifteenth/drawFrom.js';
-const currentVals = await drawFrom({
+import {protocols} from 'fifteenth/protocols.js';
+import {resolveValues} from 'assign-gingerly/resolve/resolveValues.js';
+
+const currentVals = await resolveValues({
     prop1:  'indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject',
     prop2:  'localStorage://myKey?.mySubObject',
     prop3:  'sessionStorage://myKey?.mySubObject',
     prop4:  'globalThis://a/b',
     prop5:  'cookie://myCookieName',
-    prop6:  'abcookie://myCookieName', //TODO encode with atob, btoa
-    prop7:  'locationHash://myKeyName' 
-});
+    prop6:  'locationHash://myKeyName',
+    prop7:  'a plain literal, passed through untouched',
+}, {}, { protocols });
 ```
+
+To weave the resolved values straight into a target object, hand the same bag to
+`assignFrom` / `assignFromAsync`:
+
+```JavaScript
+import {protocols} from 'fifteenth/protocols.js';
+import {assignFromAsync} from 'assign-gingerly/assignFromAsync.js';
+
+await assignFromAsync(target, {
+    zip:   'indexedDB://addressDB/byUser/current?.address?.zip',
+    theme: 'localStorage://prefs?.theme',
+}, { from: {}, protocols });
+```
+
+The single-resource `get()` above is a thin convenience wrapper over these same
+pieces, so one USL and a whole pattern object resolve through one code path.
+
+> `abcookie://` (base64 encode/decode via `atob`/`btoa`) is not yet implemented.
 
 It will prove useful to give names to parts of the strings, just as it is useful to do with URL's:
 
@@ -93,28 +121,30 @@ await stow({
 
 
 
-## One-time pull of multiple resources
+## Integration with assign-gingerly
 
-##  Integration with assignGingerly 
+`fifteenth` depends on [assign-gingerly](https://github.com/bahrus/assign-gingerly)
+and is designed to be used *through* it:
 
-[Previously](II.--Signals-vs-Roundabouts#merging-traffic-via-assigngingerly-wip), we described the *assignGingerly* utility function that can merge one object into another, with more merging abilities than what Object.assign provides.  We can also weave USP's into the target object as part of the assignGingerly function/method:
+| Layer | Example | Owner |
+|---|---|---|
+| Outer USL grammar | `‹protocol›://‹key›?.‹chain›`, sync vs async, `?.` resolution | assign-gingerly |
+| Per-protocol key | `myDB/myStore/myKey`, later `[7]`, `[7..17]`, `{…filter…}` | **fifteenth** |
 
-```JavaScript
-(await import('trans-render/lib/weave.js')).weave({
-    prop1:  'indexedDB://myDB/myStore/myKey?.mySubject?.mySubSubObject',
-    prop2:  'localStorage://myKey?.mySubObject',
-    prop3:  'sessionStorage://myKey?.mySubObject'
-}).into('mvJ1LScYN0KZKrjSP5ChWQ');
+assign-gingerly exposes the outer-grammar primitives (`parseProtocolRef`,
+`hasProtocol`) from `assign-gingerly/resolve/getValues.js`; `fifteenth` imports
+them rather than re-implementing the split, and ships:
 
-await (await import('trans-render/lib/assignGingerly.js')).assignGingerly(obj, {
-    '...': 'mvJ1LScYN0KZKrjSP5ChWQ'
-});
-```
+- **`protocols`** (`fifteenth/protocols.js`) — the handler bag for
+  `resolveValues` / `assignFrom` / `assignFromAsync`.
+- **`ambientProtocols`** (`fifteenth/ambient.js`) — just the synchronous
+  handlers (`globalThis`, `localStorage`, `sessionStorage`, `cookie`,
+  `locationHash`), for use with the synchronous `getValues` / `assignFrom`.
+- **`get`** (`fifteenth/get.js`) — the single-USL convenience wrapper.
+- **`IDBObjectStore`** (`fifteenth/idb.js`) — the minimal IndexedDB object-mode
+  wrapper backing the `indexedDB` handler.
 
-
-
-In the example above, we made use of a guid ('mvJ1LScYN0KZKrjSP5ChWQ').  This value doesn't have to be a guid.  It can be a number or a symbol, or a shorter, meaningful string.  The intention is it should be unique throughout the application, at least in the context of weave / assignGingerly.
-
+Dependency direction is `fifteenth → assign-gingerly`, never the reverse.
 
 ## IndexedDB -- Object mode vs Tabular mode [WIP]
 

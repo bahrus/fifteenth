@@ -1,30 +1,46 @@
 # Tasks: One-time Pull of a Single Resource
 
-## Task 1: Create parse module (parse.js + parse.ts)
-- [ ] Implement `splitOnce(str, separator)` helper
-- [ ] Implement `parse(usl)` function with caching
-- [ ] Create `parse.ts` type declarations
-- [ ] Update `tsconfig.json` include to cover new files
+> **Recalibrated (2026-09-05).** This package no longer owns the outer USL
+> grammar. assign-gingerly now exports `parseProtocolRef` / `hasProtocol` from
+> `assign-gingerly/resolve/getValues.js`, and `get()` is a thin wrapper over
+> those plus the `protocols` handler bag. See `Chats/Tasks.md` for the full
+> implementation notes and `Chats/Strategy.md` for the rationale.
 
-## Task 2: Create IndexedDB helper (idb.js + idb.ts)
-- [ ] Implement `IDBObjectStore` class with open/get methods
-- [ ] Version-incrementing loop for store creation
-- [ ] Promise wrappers for IDB operations
-- [ ] Create `idb.ts` type declarations
+## Task 1: ~~Create parse module (parse.js + parse.ts)~~ — REVERSED
+- [x] Deleted `parse.ts`; the outer split is imported from assign-gingerly
+      (`parseProtocolRef`, `hasProtocol`). Per-protocol inner parsing (the `/`
+      split of the key) now lives in each handler.
 
-## Task 3: Create get module (get.js + get.ts)
-- [ ] Implement `get(usl)` async function
-- [ ] Protocol dispatch: globalThis, localStorage, sessionStorage
-- [ ] Protocol dispatch: indexedDB (using idb.js)
-- [ ] Protocol dispatch: cookie, locationHash
-- [ ] Accessor chain traversal
-- [ ] Create `get.ts` type declarations
+## Task 2: IndexedDB helper (idb.ts) — DONE
+- [x] `IDBObjectStore` class with open/get/put/close
+- [x] Version-incrementing loop for store creation
+- [x] Promise wrappers for IDB operations
+- [x] `indexedDBHandler` async protocol handler (`dbName/storeName/key`)
 
-## Task 4: Create test page and Playwright spec
-- [ ] Create `tests/test-get.html` with import map and in-browser tests
-- [ ] Create `tests/get.spec.ts` Playwright spec
-- [ ] Verify all tests pass across browsers
+## Task 3: Handler bag + get module — DONE
+- [x] `ambient.ts` — sync handlers: globalThis, localStorage, sessionStorage,
+      cookie, locationHash (+ `ambientProtocols` export)
+- [x] `protocols.ts` — `{ ...ambientProtocols, indexedDB: indexedDBHandler }`
+- [x] `get.ts` — `get(usl)` = `parseProtocolRef` + bag + `getValue` for the `?.` tail
+- [x] `index.ts` — top-level re-exports
+- [x] Accessor chain now resolved by assign-gingerly's `getValue` (no bespoke
+      traversal; `globalThis://a/b?.c` no longer throws)
 
-## Task 5: Update tsconfig.json
-- [ ] Ensure all new `.ts` files are included in compilation
-- [ ] Verify no type errors with `npx tsc --noEmit`
+## Task 4: Test page and Playwright spec — DONE
+- [x] `tests/test-get.html` — in-browser tests; import map now also maps
+      `assign-gingerly/`
+- [x] `tests/get.spec.ts` — Playwright spec
+- [x] Added `protocols`-bag tests exercising `resolveValues`
+- [x] Chromium green (18/18). Firefox/WebKit need `npx playwright install`.
+
+## Task 5: tsconfig / packaging — DONE
+- [x] `tsc` clean (`*.ts` include already covers the new root files)
+- [x] `.gitignore` updated for the new compiled outputs
+- [x] `package.json` `main`/`homepage`/`repository` fixed (`xvth` -> `fifteenth`),
+      `exports` map added
+
+## Still open (future specs)
+- [ ] Tabular IndexedDB: `[7]`, `[]`, `[7..17]`, `{filter}` row syntax
+- [ ] `set` / `stow` (write side) — port from `legacy/XV`
+- [ ] `gait` (wait-for-value) — port from `legacy/XV`
+- [ ] `abcookie://` base64 variant

@@ -2,18 +2,41 @@
   "name": "fifteenth",
   "version": "0.0.0",
   "description": "The fifteenth standard - a common language for resource management across browser storage APIs",
-  "homepage": "https://github.com/bahrus/xvth#readme",
+  "homepage": "https://github.com/bahrus/fifteenth#readme",
   "bugs": {
-    "url": "https://github.com/bahrus/xvth/issues"
+    "url": "https://github.com/bahrus/fifteenth/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bahrus/xvth.git"
+    "url": "git+https://github.com/bahrus/fifteenth.git"
   },
   "license": "MIT",
   "author": "Bruce B. Anderson <anderson.bruce.b@gmail.com>",
   "type": "module",
-  "main": "xv.js",
+  "main": "index.js",
+  "types": "index.ts",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.js"
+    },
+    "./get.js": {
+      "types": "./get.ts",
+      "default": "./get.js"
+    },
+    "./protocols.js": {
+      "types": "./protocols.ts",
+      "default": "./protocols.js"
+    },
+    "./ambient.js": {
+      "types": "./ambient.ts",
+      "default": "./ambient.js"
+    },
+    "./idb.js": {
+      "types": "./idb.ts",
+      "default": "./idb.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "serve": "node ./node_modules/spa-ssi/serve.js",
@@ -21,6 +44,9 @@
     "update": "ncu -u && npm install",
     "safari": "npx playwright wk http://localhost:8000",
     "chrome": "npx playwright cr http://localhost:8000"
+  },
+  "dependencies": {
+    "assign-gingerly": "0.0.96"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

@@ -1,3 +1,5 @@
+import type { ProtocolHandler } from './ambient.js';
+
 /**
  * Minimal IndexedDB wrapper for object-mode stores ({ keyPath: 'key' }).
  */
@@ -91,3 +93,27 @@ export class IDBObjectStore {
         }
     }
 }
+
+/**
+ * Async protocol handler for `indexedDB://‹dbName›/‹storeName›/‹key›`.
+ *
+ * Receives only the key portion (`dbName/storeName/key`); the outer USL grammar
+ * and any trailing `?.` accessor chain are handled by assign-gingerly. Returns
+ * `null` when the record is absent.
+ *
+ * Object-mode stores only for now — the tabular `[]` / `[a..b]` / `{filter}`
+ * row syntax described in the README is separate, still-unbuilt work.
+ */
+export const indexedDBHandler: ProtocolHandler = async (key: string) => {
+    const [dbName, storeName, propName] = key.split('/');
+    if (!dbName || !storeName || !propName) {
+        throw new Error(`indexedDB key requires "dbName/storeName/key", got "${key}"`);
+    }
+    const store = new IDBObjectStore(dbName, storeName);
+    await store.open();
+    try {
+        return await store.get(propName);
+    } finally {
+        store.close();
+    }
+};
