@@ -414,3 +414,99 @@ But on github actions, it is failing:
 2
 
 Any idea why it is failing?
+
+## Claude's Response II — CI fix
+
+**The workflow never builds the TypeScript.** `.github/workflows/CI.yml` ran
+`npx playwright test` directly, with no `npm run build` step. The source is
+`.ts`; `tsc` emits the `.js` siblings; those `.js` files are `.gitignore`d, so
+on a fresh CI checkout `/get.js`, `/protocols.js`, `/idb.js` etc. simply don't
+exist.
+
+Chain of failure:
+
+1. `tests/test-get.html` does `import { get } from 'fifteenth/get.js'` (→ `/get.js`).
+2. On CI that's a 404, so the whole `<script type="module">` fails to
+   evaluate — **none** of it runs, including the block that sets
+   `#test-complete`'s `data-status`.
+3. The spec waits 15 s for `data-status` to appear, it never does
+   (`unexpected value "null"`), all three browser projects time out.
+
+It passes for you locally because `npm run test` = **`npm run build && playwright
+test`** — you always have fresh `.js` files. The bare `npx playwright test` in CI
+skips the build. This isn't something the recalibration broke; the original
+`get.js` / `parse.js` were gitignored too, so this brand-new workflow could
+never have gone green as written.
+
+**Fix applied** — added a build step to `CI.yml`:
+
+```yaml
+    - name: Install dependencies
+      run: npm ci
+    - name: Build
+      run: npm run build
+    - name: Install Playwright
+      run: npx playwright install --with-deps
+    - name: Run Playwright tests
+      run: npx playwright test
+```
+
+Verified locally by deleting every compiled `.js`, running `npm run build`, then
+`npx playwright test --project=chromium` — green.
+
+(Alternative, if you'd rather not have a separate step: change the last step to
+`run: npm test`, which already chains the build. Either works; the explicit step
+keeps the log readable.)
+
+Unrelated, noticed while in there: `.github/copilot-instructions.md` is still
+assign-gingerly's file verbatim ("assign-gingerly AI coding guidelines",
+references `docs/`, `inferencer` submodule, etc.) — worth rewriting for
+fifteenth at some point.
+
+## Bruce's Response II
+
+Happily, I wa going to ask for that next.  I like to not add compiled *.js files to the .gitignore file.  The assign gingerly project has a setting to make the *.js files appear as children of the *.ts files in vs code, so it is easier to remember not to edit them.  Can you make those changes?  Then we can eliminate the change that you made to CI.yml.
+
+## Claude's Response III — commit the compiled JS, drop the CI build step
+
+Done. The compiled `.js` now lives beside its `.ts` source and is committed;
+CI just runs the tests against it, same as before I touched `CI.yml`.
+
+**Changes:**
+
+1. **`.gitignore`** — removed the whole "TypeScript compiled output" block
+   (the `/get.js`, `/parse.js`, … list). `*.tsbuildinfo` stays ignored.
+2. **`.vscode/settings.json`** — added file nesting so the emitted files tuck
+   under their `.ts` parent in the Explorer (collapsed by default):
+   ```json
+   {
+     "explorer.fileNesting.enabled": true,
+     "explorer.fileNesting.expand": false,
+     "explorer.fileNesting.patterns": {
+       "*.ts": "${capture}.js, ${capture}.d.ts, ${capture}.js.map, ${capture}.d.ts.map"
+     }
+   }
+   ```
+3. **`tsconfig.json`** — `declaration: true` → **`false`**. With the `.js`
+   committed, `declaration: true` would also drop five generated `.d.ts` files
+   into the repo. They're redundant: `package.json`'s `exports` already points
+   every `types` entry at the `.ts` source (assign-gingerly's pattern), so
+   consumers get types straight from source. Now there's exactly one emitted
+   artifact per source file — the `.js`. (If you'd rather ship `.d.ts` after
+   all, flip it back; the nesting pattern already covers them.)
+4. **`.github/workflows/CI.yml`** — reverted. The `Build` step is gone; the file
+   is byte-identical to what you committed. (Supersedes the "Fix applied" block
+   in Response II.)
+
+**New files now tracked** (compiled from the existing `.ts`):
+`ambient.js`, `get.js`, `idb.js`, `index.js`, `protocols.js`.
+
+> These five must be committed **together with** the `.gitignore` / `tsconfig` /
+> `CI.yml` changes. If the `.js` files land without being committed (or vice
+> versa) CI fails with the exact `#test-complete … "null"` timeout from
+> Response I. `npm run build` regenerates them; the pre-existing
+> `markdown-changes` steering rule means a docs-only commit can skip the
+> rebuild.
+
+Verified: clean `npm run build` emits only the `.js` (no `.d.ts`);
+`npx playwright test --project=chromium` green.

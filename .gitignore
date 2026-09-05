@@ -44,18 +44,8 @@ jspm_packages/
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 
-# TypeScript compiled output (source is .ts, tsc emits .js and .d.ts)
-# Root-level compiled files
-/index.js
-/index.d.ts
-/get.js
-/get.d.ts
-/ambient.js
-/ambient.d.ts
-/protocols.js
-/protocols.d.ts
-/idb.js
-/idb.d.ts
+# Compiled .js sit next to their .ts sources and ARE committed
+# (VS Code nests them under the .ts via .vscode/settings.json).
 
 # TypeScript cache
 *.tsbuildinfo
