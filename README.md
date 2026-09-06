@@ -127,7 +127,7 @@ This returns the value if it exists, if not, it waits for a post message matchin
 
 <!--dreg-->
 
-## One-time push of multiple resources: [Untested]
+## One-time push of multiple resources: [TODO]
 
 ```JavaScript
 const values = {
