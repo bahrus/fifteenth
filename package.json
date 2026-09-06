@@ -28,6 +28,14 @@
       "types": "./set.ts",
       "default": "./set.js"
     },
+    "./jsonblob.js": {
+      "types": "./jsonblob.ts",
+      "default": "./jsonblob.js"
+    },
+    "./protocolRegistry.js": {
+      "types": "./protocolRegistry.ts",
+      "default": "./protocolRegistry.js"
+    },
     "./protocols.js": {
       "types": "./protocols.ts",
       "default": "./protocols.js"

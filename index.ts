@@ -14,3 +14,7 @@ export { get } from './get.js';
 export { set } from './set.js';
 export type { SavingContext } from './set.js';
 export { IDBObjectStore, indexedDBHandler } from './idb.js';
+export { registerProtocol } from './protocolRegistry.js';
+export type { ProtocolWriter } from './protocolRegistry.js';
+export { jsonBlobProtocols, configureJsonBlob } from './jsonblob.js';
+export type { JsonBlobConfig, JsonBlobServiceConfig, IdStore, TokenProvider } from './jsonblob.js';

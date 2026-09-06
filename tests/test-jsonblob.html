@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>fifteenth — jsonblob() tests</title>
+    <script type="importmap">
+        {
+            "imports": {
+                "fifteenth/": "/",
+                "assign-gingerly/": "/node_modules/assign-gingerly/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="test-complete"></div>
+    <script type="module">
+        import { get } from 'fifteenth/get.js';
+        import { set } from 'fifteenth/set.js';
+        import { configureJsonBlob, jsonBlobProtocols } from 'fifteenth/jsonblob.js';
+        import { resolveValues } from 'assign-gingerly/resolve/resolveValues.js';
+
+        const results = [];
+        let passed = 0;
+        let failed = 0;
+
+        async function test(name, fn) {
+            try {
+                await fn();
+                passed++;
+                results.push(`PASS: ${name}`);
+            } catch (e) {
+                failed++;
+                results.push(`FAIL: ${name} — ${e.message || e}`);
+            }
+        }
+
+        function assert(actual, expected, msg) {
+            if (actual !== expected) throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+        }
+        function assertDeep(actual, expected, msg) {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+                throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        // ---- in-memory fetch stub emulating the /api/jsonBlob REST shape ----
+
+        const realFetch = window.fetch;
+        const stub = {
+            blobs: new Map(),
+            seq: 0,
+            posts: 0,
+            lastAuth: undefined,
+        };
+
+        window.fetch = async (url, init = {}) => {
+            const u = new URL(url, location.href);
+            const isSuper = u.hostname.includes('superjsonblob') || u.pathname.includes('/super/');
+            const method = (init.method || 'GET').toUpperCase();
+            const m = u.pathname.match(/\/api\/jsonBlob(?:\/([^/?#]+))?$/);
+            if (!m) return realFetch(url, init);
+
+            stub.lastAuth = (init.headers && (init.headers.Authorization || init.headers.authorization)) || undefined;
+            const id = m[1] ? decodeURIComponent(m[1]) : null;
+
+            if (method === 'POST') {
+                stub.posts++;
+                const newId = `blob-${++stub.seq}`;
+                stub.blobs.set(newId, JSON.parse(init.body));
+                const headers = { 'Content-Type': 'application/json' };
+                if (!isSuper) {
+                    headers['Location'] = `/api/jsonBlob/${newId}`;
+                    headers['X-jsonblob-id'] = newId;
+                }
+                // superjsonblob: id only in the body
+                return new Response(JSON.stringify({ id: newId, versionNumber: 1 }), { status: 201, headers });
+            }
+            if (method === 'GET') {
+                if (!stub.blobs.has(id)) return new Response('{"error":"not found"}', { status: 404 });
+                return new Response(JSON.stringify(stub.blobs.get(id)), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (method === 'PUT') {
+                if (!stub.blobs.has(id)) return new Response('{}', { status: 404 });
+                stub.blobs.set(id, JSON.parse(init.body));
+                return new Response(JSON.stringify(stub.blobs.get(id)), { status: 200 });
+            }
+            if (method === 'DELETE') {
+                stub.blobs.delete(id);
+                return new Response('', { status: 204 });
+            }
+            return new Response('', { status: 405 });
+        };
+
+        function clearHash() {
+            history.replaceState(history.state, '', location.pathname + location.search);
+        }
+        function hashId(service, alias) {
+            return new URLSearchParams(location.hash.slice(1)).get(`jsonBlobID:${service}:${alias}`);
+        }
+
+        // ---- tests ----
+
+        await test('set (no chain) POSTs a new blob and records its id; get reads it back', async () => {
+            clearHash();
+            configureJsonBlob();
+            await set('jsonblob://prefs', { a: 1 });
+            const id = hashId('jsonblob', 'prefs');
+            assert(typeof id === 'string' && id.length > 0, true, 'id recorded in hash');
+            assertDeep(await get('jsonblob://prefs'), { a: 1 }, 'round-trip');
+        });
+
+        await test('set with accessor chain merges into the existing blob', async () => {
+            clearHash();
+            configureJsonBlob();
+            await set('jsonblob://prefs2', { a: 1 });
+            await set('jsonblob://prefs2?.b?.c', 9);
+            assertDeep(await get('jsonblob://prefs2'), { a: 1, b: { c: 9 } }, 'merge');
+            // sibling preserved, exact leaf overwritten
+            await set('jsonblob://prefs2?.b?.c', 10);
+            assertDeep(await get('jsonblob://prefs2'), { a: 1, b: { c: 10 } }, 'overwrite leaf');
+        });
+
+        await test('get on an unmapped alias returns null and does not POST', async () => {
+            clearHash();
+            configureJsonBlob();
+            const before = stub.posts;
+            assert(await get('jsonblob://never-set'), null, 'null for unmapped');
+            assert(stub.posts, before, 'no POST on read');
+        });
+
+        await test('direct id form (=<id>) skips the id-store', async () => {
+            clearHash();
+            configureJsonBlob();
+            const post = await window.fetch('https://jsonblob.com/api/jsonBlob', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"seed":true}',
+            });
+            const { id } = await post.json();
+
+            assertDeep(await get(`jsonblob://=${id}`), { seed: true }, 'direct get');
+            await set(`jsonblob://=${id}?.extra`, 5);
+            assertDeep(await get(`jsonblob://=${id}`), { seed: true, extra: 5 }, 'direct set merge');
+            assert(hashId('jsonblob', `=${id}`), null, 'no hash entry for direct id');
+        });
+
+        await test('jsonBlobProtocols() bag works with resolveValues', async () => {
+            clearHash();
+            configureJsonBlob();
+            await set('jsonblob://bagtest', { user: { name: 'Ada' } });
+            const protocols = jsonBlobProtocols();
+            const out = await resolveValues({ name: 'jsonblob://bagtest?.user?.name' }, {}, { protocols });
+            assertDeep(out, { name: 'Ada' }, 'resolveValues via bag');
+        });
+
+        await test('concurrent first writes to one alias create exactly one blob', async () => {
+            clearHash();
+            configureJsonBlob();
+            const before = stub.posts;
+            await Promise.all([
+                set('jsonblob://race?.x', 1),
+                set('jsonblob://race?.y', 2),
+                set('jsonblob://race?.z', 3),
+            ]);
+            assert(stub.posts - before, 1, 'one POST for three concurrent sets');
+            const v = await get('jsonblob://race');
+            assert(v.x === 1 && v.y === 2 && v.z === 3, true, 'all three merged');
+        });
+
+        await test('getToken adds an Authorization header', async () => {
+            clearHash();
+            configureJsonBlob({ jsonblob: { getToken: () => 'tok-123' } });
+            const post = await realFetchThroughStub({ seeded: 1 });
+            stub.lastAuth = undefined;
+            await get(`jsonblob://=${post}`);
+            assert(stub.lastAuth, 'Bearer tok-123', 'auth header sent');
+        });
+
+        async function realFetchThroughStub(value) {
+            const r = await window.fetch('https://jsonblob.com/api/jsonBlob', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
+            });
+            return (await r.json()).id;
+        }
+
+        await test('idStore:"localStorage" keeps ids out of the URL hash', async () => {
+            clearHash();
+            localStorage.removeItem('jsonBlobID:jsonblob:lsalias');
+            configureJsonBlob({ jsonblob: { idStore: 'localStorage' } });
+            await set('jsonblob://lsalias', { n: 1 });
+            assert(hashId('jsonblob', 'lsalias'), null, 'nothing in hash');
+            assert(typeof localStorage.getItem('jsonBlobID:jsonblob:lsalias'), 'string', 'id in localStorage');
+            assertDeep(await get('jsonblob://lsalias'), { n: 1 }, 'round-trip via localStorage store');
+            localStorage.removeItem('jsonBlobID:jsonblob:lsalias');
+        });
+
+        await test('a 404 on read drops the stale alias mapping', async () => {
+            clearHash();
+            configureJsonBlob();
+            // point an alias at an id the stub does not know
+            history.replaceState(history.state, '', location.pathname + '#jsonBlobID:jsonblob:ghost=blob-does-not-exist');
+            assert(await get('jsonblob://ghost'), null, 'missing blob → null');
+            assert(hashId('jsonblob', 'ghost'), null, 'stale mapping removed');
+        });
+
+        await test('superjsonblob: new-blob id is taken from the POST body when no Location header', async () => {
+            clearHash();
+            configureJsonBlob();
+            await set('superjsonblob://spx', { hi: 1 });
+            const id = hashId('superjsonblob', 'spx');
+            assert(typeof id === 'string' && id.length > 0, true, 'id resolved from body');
+            assertDeep(await get('superjsonblob://spx'), { hi: 1 }, 'round-trip');
+        });
+
+        // ---- restore & report ----
+        window.fetch = realFetch;
+
+        const el = document.getElementById('test-complete');
+        if (failed === 0) {
+            el.textContent = `All ${passed} tests passed`;
+        } else {
+            el.textContent = `${failed} of ${passed + failed} tests failed:\n${results.filter(r => r.startsWith('FAIL')).join('\n')}`;
+        }
+        el.setAttribute('data-status', failed === 0 ? 'pass' : 'fail');
+        console.log(results.join('\n'));
+    </script>
+</body>
+</html>

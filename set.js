@@ -1,5 +1,6 @@
 import { parseProtocolRef } from 'assign-gingerly/resolve/getValues.js';
 import { IDBObjectStore } from './idb.js';
+import { getProtocolWriter } from './protocolRegistry.js';
 /**
  * Walk `parts` from `root`, creating a plain object at any segment that is
  * missing or not an object, and return the container plus the final key so the
@@ -41,9 +42,10 @@ function notify(usp, usl, ctx) {
 /**
  * Merge `val` into the object read from `read()` at `parts`, and hand the whole
  * (possibly newly created) root back to `write()`. Shared by the stores that
- * hold structured values (Web Storage, IndexedDB).
+ * hold structured values (Web Storage, IndexedDB) and by the registered network
+ * writers (`jsonblob.js`). `parts` must be non-empty.
  */
-function writeThroughObject(current, parts, val) {
+export function writeThroughObject(current, parts, val) {
     const root = current !== null && typeof current === 'object' ? current : {};
     const { target, lastKey } = evaluatePath(root, parts);
     target[lastKey] = val;
@@ -114,10 +116,18 @@ async function setIndexedDB(key, parts, val) {
  * instead.
  *
  * `cookie` and `locationHash` hold plain strings and reject an accessor chain.
+ * Protocols registered via `registerProtocol` (e.g. `jsonblob://` after
+ * `configureJsonBlob()`) are dispatched to their writer before the built-ins.
  */
 export async function set(usl, val, ctx) {
     const { protocol, key, path } = parseProtocolRef(usl);
     const parts = chainParts(path);
+    const registered = getProtocolWriter(protocol);
+    if (registered !== undefined) {
+        await registered(key, parts, val);
+        notify(`${protocol}://${key}`, usl, ctx);
+        return;
+    }
     switch (protocol) {
         case 'globalThis': {
             const allParts = key.split('/').filter(Boolean).concat(parts);

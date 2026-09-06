@@ -9,8 +9,9 @@ This package defines a common language for "resource management", where the reso
 4.  indexedDB
 5.  cookies
 6.  location.hash
-7.  signals (?)
-8.  imports (?)
+7.  remote JSON blobs — [jsonblob.com](https://jsonblob.com/) / [superjsonblob](https://superjsonblob.com/) (opt-in)
+8.  signals (?)
+9.  imports (?)
 
 ## One-time pull of a single resource:
 
@@ -169,6 +170,62 @@ them rather than re-implementing the split, and ships:
   wrapper backing the `indexedDB` handler.
 
 Dependency direction is `fifteenth → assign-gingerly`, never the reverse.
+
+## Remote JSON blobs: `jsonblob://` and `superjsonblob://`
+
+Opt-in support for [jsonblob.com](https://jsonblob.com/) and the
+API-compatible [superjsonblob](https://superjsonblob.com/). Not in the default
+`protocols` bag (network latency / failure / auth differ from the browser
+stores). Enable it once:
+
+```JavaScript
+import { configureJsonBlob } from 'fifteenth/jsonblob.js';
+import { get, set } from 'fifteenth';
+
+configureJsonBlob();                          // public hosts, URL-hash id-store
+
+await set('jsonblob://prefs?.theme', 'dark'); // POSTs a new blob the first time
+const theme = await get('jsonblob://prefs?.theme');
+```
+
+or hand the bag straight to assign-gingerly:
+
+```JavaScript
+import { jsonBlobProtocols } from 'fifteenth/jsonblob.js';
+const protocols = { ...ambientProtocols, ...jsonBlobProtocols() };
+```
+
+**The key is a local alias, not the blob id.** `jsonblob://prefs` names a
+logical slot; the real server-assigned id is kept in an *id-store* — by default
+the URL hash, as `#jsonBlobID:jsonblob:prefs=<id>` (`&`-joined with any other
+hash pairs; visible to the `locationHash://` protocol, so that prefix is
+reserved). The first `set` to an unmapped alias `POST`s a blob and records its
+id; later `set`s `PUT`. `get` on an unmapped alias returns `null`. Because the
+pointer lives in the URL, sharing the link shares the data; two contexts that
+each `set` from a bare URL create *separate* blobs.
+
+```JavaScript
+configureJsonBlob({
+  jsonblob:      { idStore: 'localStorage' },          // or a custom { get, set, delete? }
+  superjsonblob: { getToken: () => firebaseUser.getIdToken(),   // → Authorization: Bearer …
+                   baseURL: 'https://my-instance.example' },     // self-hosted / proxy
+});
+```
+
+- **Direct id:** `jsonblob://=<id>` addresses a blob id straight, skipping the
+  id-store.
+- **Accessor chain:** `set('jsonblob://prefs?.a?.b', v)` is read-modify-write
+  (`GET` → merge → `PUT`), same create-on-write semantics as the other stores.
+  Concurrent writes in one tab are serialized per blob; across tabs/devices they
+  still race.
+- **Auth:** jsonblob.com needs none (blobs are public-by-URL). superjsonblob
+  takes an optional Firebase `Bearer` token via `getToken` (called per request).
+- **CORS:** jsonblob.com sends `Access-Control-Allow-Origin: *` and exposes the
+  `Location` / `X-jsonblob-id` headers — usable from any browser origin.
+  **superjsonblob.com currently sends no CORS headers**, so from a browser it
+  only works same-origin, through a proxy, or against a self-hosted `baseURL`.
+- **Retention:** jsonblob.com deletes a blob ~75 days after its last access; a
+  `404` on read drops the stale alias mapping so the next `set` re-creates it.
 
 ## IndexedDB -- Object mode vs Tabular mode [WIP]
 
