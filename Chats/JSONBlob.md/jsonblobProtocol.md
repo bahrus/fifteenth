@@ -175,7 +175,7 @@ Here's what I propose:
    set('jsonBlob://myPath', '{hello: 'world'});
    ```
 
-2.  The code checks if the hash portion of the current url has an embedded "jsonBlobID=..." in it, which doesn't interfere with other hash portion name value pairs (use & delimiter?).
+2.  The code checks if the hash portion of the current url has an embedded "jsonBlobID:myPath=..." in it, which doesn't interfere with other hash portion name value pairs (use & delimiter?).
 
     1.  If no id found, do a POST to create the blob.  Update the location.hash to specify the returned id.
 
