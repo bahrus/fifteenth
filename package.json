@@ -32,6 +32,14 @@
       "types": "./jsonblob.ts",
       "default": "./jsonblob.js"
     },
+    "./gist.js": {
+      "types": "./gist.ts",
+      "default": "./gist.js"
+    },
+    "./aliasStore.js": {
+      "types": "./aliasStore.ts",
+      "default": "./aliasStore.js"
+    },
     "./protocolRegistry.js": {
       "types": "./protocolRegistry.ts",
       "default": "./protocolRegistry.js"

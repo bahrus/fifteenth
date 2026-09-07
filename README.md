@@ -10,8 +10,9 @@ This package defines a common language for "resource management", where the reso
 5.  cookies
 6.  location.hash
 7.  remote JSON blobs — [jsonblob.com](https://jsonblob.com/) / [superjsonblob](https://superjsonblob.com/) (opt-in)
-8.  signals (?)
-9.  imports (?)
+8.  GitHub Gists — a git-versioned JSON file per gist (opt-in)
+9.  signals (?)
+10. imports (?)
 
 ## One-time pull of a single resource:
 
@@ -230,6 +231,62 @@ configureJsonBlob({
 Live round-trip demos (not stubbed) live in [`demos/`](./demos): open
 `demos/jsonblob.html` via `npm run serve` for the jsonblob.com browser path, or
 run `npm run demo:jsonblob` for a Node check against superjsonblob.
+
+## GitHub Gists: `gist://`
+
+Opt-in support for storing a JSON document as one file inside a
+[GitHub Gist](https://gist.github.com/) — git-versioned, never auto-purged,
+and `api.github.com` sends `Access-Control-Allow-Origin: *` with `Authorization`
+allowed, so it works from any browser origin with **no proxy**. Not in the
+default `protocols` bag.
+
+```JavaScript
+import { configureGist } from 'fifteenth/gist.js';
+import { get, set } from 'fifteenth';
+
+configureGist({ getToken: () => localStorage.getItem('ghGistToken') });
+
+await set('gist://prefs?.theme', 'dark');   // creates a secret gist the first time
+const theme = await get('gist://prefs?.theme');
+```
+
+**Addressing: `gist://<alias>[/<file>]`.** `<alias>` is a local name, not the
+gist id — the id is kept in an id-store, by default the URL hash as
+`#gistID:<alias>=<id>` (same machinery, reserved prefix, and share-the-link
+semantics as `jsonblob://`). `<file>` selects the file inside the gist and
+defaults to `data.json`, so one gist can hold several documents
+(`gist://prefs/theme.json`, `gist://prefs/layout.json`). The first `set` to an
+unmapped alias `POST`s a new gist; later `set`s `PATCH`. `get` on an unmapped
+alias returns `null`.
+
+```JavaScript
+configureGist({
+  getToken:    () => localStorage.getItem('ghGistToken'), // needed for writes
+  public:      false,             // default — a "secret" (unlisted) gist
+  defaultFile: 'data.json',       // file name when the USL names only an alias
+  description: 'my app state',    // set on gists this module creates
+  idStore:     'locationHash',    // | 'localStorage' | custom { get, set, delete? }
+  baseURL:     'https://api.github.com', // override for GitHub Enterprise / a proxy
+});
+```
+
+- **Direct id:** `gist://=<id>/data.json` addresses a gist id straight, skipping
+  the id-store.
+- **Accessor chain:** `set('gist://prefs?.a?.b', v)` is read-modify-write
+  (`GET` gist → merge the file → `PATCH`) — GitHub can't merge one JSON key
+  server-side. Concurrent writes in one tab are serialized per alias; across
+  tabs/devices they still race.
+- **Auth:** reads of a public gist need none; **creating / updating needs a
+  token with the `gist` scope** — a fine-grained PAT with *Gists: Read and
+  write*, or a classic PAT with `gist`. Pass it via `getToken` (called per
+  request, may be async). A pasted PAT avoids the one thing a browser can't do
+  cross-origin: GitHub's OAuth `code`→token exchange sends no CORS header, so a
+  real "Sign in with GitHub" button needs a tiny token-exchange proxy.
+- **A secret gist is unlisted, not private** — anyone with the id can read it.
+- **Rate limit:** 5000 requests/hour (authenticated).
+
+`demos/gist.html` (via `npm run serve`) round-trips live against a real secret
+gist — paste a `gist`-scoped token into the page.
 
 ## IndexedDB -- Object mode vs Tabular mode [WIP]
 

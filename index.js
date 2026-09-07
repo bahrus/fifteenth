@@ -14,3 +14,4 @@ export { set } from './set.js';
 export { IDBObjectStore, indexedDBHandler } from './idb.js';
 export { registerProtocol } from './protocolRegistry.js';
 export { jsonBlobProtocols, configureJsonBlob } from './jsonblob.js';
+export { gistProtocols, configureGist } from './gist.js';

@@ -695,6 +695,247 @@ a permanent token, `gist://` is the one.
 from you for the live demo (or I can point it at a throwaway project's open DB
 if you'd rather not).
 
+## Bruce's V
+
+The firebase solution is feeling a little heavy.  Would it suggest making ths package dependent on some firebase packages?
+
+The github gist solution sounds intriguing.  Would this be lighter weight to integrate with? No dependencies?  What are the setup steps?  I'm perfectly fine with expecting users to need to log in to github to authorize the web page to save to the gist.
+
+## Claude's Response VI — Gist is lighter; one caveat is the login flow, not the API
+
+### Dependencies: neither actually pulls in packages
+
+- **Firebase**, done the way I proposed (RTDB **REST**), is also just `fetch` —
+  zero npm deps. The "heavy" feeling is real but it's *conceptual* weight
+  (a project, security rules, the console), not bundle weight. The trap is the
+  `firebase` JS SDK (~100 KB+, WebSocket/gRPC-web transport); we would not use
+  it, but it's a standing temptation the moment someone wants realtime/offline.
+- **Gist** is `fetch` too, with **no SDK even tempting you** — `api.github.com`
+  has proper CORS (`Access-Control-Allow-Origin: *`, `Authorization` allowed,
+  `ETag`/`Location` exposed — verified earlier), the token never expires, and
+  the mental model is "one file of JSON, git-versioned." Lighter on every axis
+  except raw write throughput.
+
+### What a `gist://` handler looks like
+
+| USL | GitHub REST call |
+|---|---|
+| `get('gist://prefs/data.json')` | `GET /gists/<id>` → pick file `data.json`, `JSON.parse` its `content` |
+| `get('gist://prefs/data.json?.theme')` | same GET, then walk `?.theme` |
+| `set('gist://prefs/data.json', {…})` | `PATCH /gists/<id>` body `{"files":{"data.json":{"content":"…"}}}` |
+| `set('gist://prefs/data.json?.theme','dark')` | `GET` → `writeThroughObject` merge → `PATCH` (read-modify-write) |
+| delete | `PATCH` with `{"files":{"data.json":null}}`, or `DELETE /gists/<id>` |
+
+- **Addressing gains a `/<file>` segment** because a gist is a *bundle of named
+  files*, not a single document.
+- **Create vs. update reuses the machinery already built for jsonblob.** A new
+  gist has no id → `POST /gists` (creates a **secret** gist seeded with the
+  value) → store the returned id in `location.hash` as `gistID:gist:<alias>=<id>`
+  via the same pluggable id-store → `PATCH /gists/<id>` on every write after.
+  `gist://=<id>/data.json` is the direct-id escape hatch. No new concepts.
+- **Sibling-safe accessor chains = client-side read-modify-write** through the
+  existing `writeThroughObject` helper (GitHub can't server-merge one JSON key
+  the way RTDB's `PATCH` can). This is *exactly* how the `jsonblob://` path
+  already works, so no new code.
+- **Versioning is free later** — gists are git-backed, every `PATCH` is a
+  commit, `GET /gists/<id>/<sha>` fetches history. Out for v1, same as before.
+
+Estimate: ~60–80 lines, on top of `protocolRegistry` + the alias/id-store +
+`getToken` hook that already exist.
+
+### The login flow — the one real caveat
+
+Reading and writing gists from a browser on another origin works fine. The
+snag is **getting the token**:
+
+- `api.github.com` (gist read/write) — CORS clean. ✅
+- `github.com/login/oauth/access_token` (turn an OAuth `code` into a token) —
+  **sends no CORS header.** A browser cannot call it directly. GitHub's
+  **Device Flow** endpoint lives on the same `github.com` host and is blocked
+  the same way.
+
+So a polished "**Sign in with GitHub → Authorize**" button needs a tiny
+**token-exchange proxy**: ~20 lines, stateless, holds the OAuth *client
+secret*, swaps `code` → `token`, never sees your data. A Cloudflare Worker /
+Netlify function / Deno Deploy handler. That is the *only* server piece, and
+it's the same shape everyone doing static-site + GitHub OAuth deploys
+(Gatekeeper, `netlify-oauth`, etc.).
+
+**Two ways to skip even that proxy:**
+
+- **Fine-grained PAT, pasted once.** The user creates a token
+  (Account permissions → *Gists: Read and write*, no repo access), pastes it
+  into the page, it lives in `localStorage`. No proxy, no OAuth App, works
+  today. It's "paste a token," not "click Authorize" — less slick, zero infra.
+- **Accept the mini-proxy** for the nicer redirect flow.
+
+Both feed the identical `configureGist({ getToken })` hook — and here the token
+genuinely *is* a static, non-expiring string, which is what your original
+"optional API key" question was reaching for all along.
+
+### Setup steps
+
+**Option 1 — PAT, no infrastructure (recommended for v1):**
+
+1. Nothing to register on your side.
+2. Each user: GitHub → Settings → Developer settings → Personal access tokens →
+   **Fine-grained** → generate; Repository access: *none*; Account permissions →
+   **Gists → Read and write**. Copy the token.
+3. Paste it into the demo page's token field → `localStorage`.
+4. `configureGist({ getToken: () => localStorage.getItem('gistToken') })`.
+5. `set('gist://prefs/data.json', {theme:'dark'})` → module `POST`s a secret
+   gist, writes `gistID:gist:prefs=<id>` into `location.hash`, `PATCH`es
+   thereafter. `get('gist://prefs/data.json?.theme')` round-trips.
+
+**Option 2 — real "Sign in with GitHub" button:**
+
+1. Register an **OAuth App** (GitHub → Settings → Developer settings → OAuth
+   Apps): homepage URL + callback URL, scope `gist`. Note client id + secret.
+2. Deploy the token-exchange worker (I'll include the file), env
+   `GITHUB_CLIENT_SECRET`, CORS allowing your origin.
+3. Page links to
+   `https://github.com/login/oauth/authorize?client_id=…&scope=gist`; on the
+   redirect back, `POST` the `?code=` to your worker, receive the token, store.
+4. Same `configureGist({ getToken })`.
+
+### Honest downsides of gist
+
+- **Secret ≠ private.** A secret gist is unlisted and unsearchable, but anyone
+  with the id/URL can read it. That's the most privacy GitHub offers here.
+  True privacy needs Firebase/Supabase with auth rules.
+- **Rate limit** 5000 req/h (authenticated). Fine for prefs; not for chatty
+  state.
+- **Whole-file writes.** Large files are truncated in API responses (there's a
+  `raw_url` to fetch the rest) and very large files are rejected; merges are
+  client-side RMW — already how the jsonblob path behaves, so no new code, but
+  it's not a database.
+
+### Recommendation
+
+Build **`gist://`** with the **PAT `getToken` hook** for v1: no deps, no infra,
+CORS clean, non-expiring token, and it drops into the registry + alias/id-store
++ `getToken` machinery already shipped. Ship the OAuth worker as a documented
+**Option 2** for anyone who wants the redirect button. Keep `jsonblob://` /
+`superjsonblob://` for self-hosted use.
+
+Say go and I'll implement `gist://` plus a `demos/gist.html` that round-trips
+live from the browser (with a PAT paste box), and the optional worker file. 
+
+## Bruce's Response VI
+
+Please implement the gist solution according to your v1 recommendations (PAT) and add your implementation notes below.
+
+## Claude's Implementation Notes — `gist://`
+
+Implemented. `npm run build` clean; full Playwright suite green — **12/12**
+across Chromium, Firefox, WebKit (`get`, `set`, `jsonblob`, and the new `gist`
+spec, 12 in-browser assertions against a stubbed GitHub transport). No live
+GitHub calls in the tests (deterministic / CI-safe, same approach as
+`jsonblob`).
+
+### Design as built (matches Response V + VI)
+
+- **Not in the default bag.** `configureGist({ getToken })` is the one-line
+  opt-in; `import 'fifteenth'` has no side effect until you call it. Also
+  `gistProtocols(config)` returns a pure `{ gist }` read bag for
+  assign-gingerly's `resolveValues` / `assignFrom`.
+- **Addressing `gist://<alias>[/<file>]`.** `<alias>` is a local name; the real
+  gist id lives in the same pluggable id-store as `jsonblob` (`'locationHash'`
+  default, key `gistID:<alias>`, written with `history.replaceState`;
+  `'localStorage'`; or a custom `{ get, set, delete? }`). `<file>` selects the
+  file inside the gist, default `data.json` (configurable via `defaultFile`), so
+  one gist can hold several documents — `gist://prefs/theme.json`,
+  `gist://prefs/layout.json` share one gist id.
+- **Direct id:** `gist://=<id>/data.json` → id-store skipped, no create-on-write.
+- **Create/update:** no chain + unmapped alias → `POST /gists`
+  (`public:false` = secret, seeded with the value); no chain + mapped →
+  `PATCH /gists/<id>`; with a chain → ensure id (`POST` `{}` if new) →
+  `GET /gists/<id>` → `writeThroughObject` merge of that one file → `PATCH`.
+  GitHub can't merge a single JSON key server-side, so accessor-chain writes are
+  read-modify-write — identical semantics to the `jsonblob` path, and it reuses
+  the exact `writeThroughObject` helper from `set.ts`.
+- **Concurrency:** per-alias create dedup (`pendingCreate`) + a per-alias write
+  queue, so a burst of `set()` in one tab serializes instead of each GET-ing the
+  same snapshot and clobbering. Cross-tab writes still race (documented).
+- **Stale mapping:** a real `404` on `GET /gists/<id>` (gist purged/deleted)
+  calls `store.delete?.(alias)` so the next `set` re-creates it. A *missing file
+  in a live gist* returns `null` **without** dropping the mapping — the two
+  cases are distinguished (that's why `fetchGist` returns the whole gist and
+  `fileValue` picks the file out, rather than one combined call).
+- **Auth:** `getToken()` awaited per request; truthy → `Authorization: Bearer`.
+  Plus `Accept: application/vnd.github+json` and
+  `X-GitHub-Api-Version: 2022-11-28`. A `401`/`403` on write throws with an
+  explicit "needs a token with the `gist` scope" hint.
+- **Large files:** if GitHub flags a file `truncated`, the handler follows
+  `raw_url` to fetch the full content.
+- **Non-JSON tolerance:** a file whose content doesn't parse as JSON is returned
+  as a raw string (mirrors the web-storage handler); a plain string written with
+  no chain is stored verbatim.
+
+### CORS / no-proxy check
+
+`api.github.com` was already confirmed earlier (`Access-Control-Allow-Origin: *`,
+`Authorization` allowed, `ETag`/`Location` exposed, no bot wall). Nothing new to
+verify — the demo drives it live from the browser. The only cross-origin gap is
+GitHub's OAuth `code`→token endpoint (`github.com/login/oauth/access_token`,
+no CORS); the pasted-PAT flow doesn't touch it.
+
+### Files
+
+- **`aliasStore.ts`** (new) — extracted the alias→id machinery that was inline
+  in `jsonblob.ts` (id-store back-ends + a per-key write-queue factory
+  `makeQueue`), parameterised by a `keyFor(alias)` function so `jsonblob`
+  (`jsonBlobID:<service>:<alias>`) and `gist` (`gistID:<alias>`) share it with
+  **no change to existing hash keys**. `jsonblob.ts` now imports from here and
+  re-exports `IdStore` / `TokenProvider` for back-compat.
+- **`gist.ts`** (new) — `gistProtocols(config?)` + `configureGist(config?)`.
+  `GistConfig`: `getToken`, `public`, `defaultFile`, `description`, `idStore`,
+  `baseURL` (GitHub Enterprise / proxy).
+- **`jsonblob.ts`** — refactored onto `aliasStore.js`; behaviour unchanged
+  (its 11 assertions still pass). Dropped an unused `parseProtocolRef` import.
+- **`index.ts`** / **`package.json`** — re-exports + `exports` entries for
+  `./gist.js` and `./aliasStore.js`.
+- **`tests/test-gist.html`** + **`tests/gist.spec.ts`** (new) — stubbed
+  `api.github.com/gists` REST shape; covers create→read, chain merge + leaf
+  overwrite, unmapped→null (no POST), multi-file-per-gist, direct-id,
+  `resolveValues` via the bag, 3-way concurrent write → exactly 1 POST + all
+  merged, `getToken` header, `localStorage` id-store, 404→stale-mapping-drop,
+  custom `defaultFile`.
+- **`demos/gist.html`** (new) — loads the real module, PAT paste box
+  (`localStorage`, sent only to `api.github.com`), live create→read→merge→read
+  against a real secret gist with click-through links.
+- **`README.md`** / **`demos/README.md`** — new `gist://` sections; intro list
+  updated.
+
+### Setup (unchanged from Response V, Option 1)
+
+1. Nothing to register.
+2. GitHub → Settings → Developer settings → Personal access tokens →
+   **Fine-grained** → Repository access *none*, Account permissions →
+   **Gists: Read and write**. (Or a classic PAT with the `gist` scope.)
+3. Paste into `demos/gist.html`'s token box → `localStorage`.
+4. `configureGist({ getToken: () => localStorage.getItem('…') })`.
+5. `set('gist://prefs/data.json', {...})` → `POST`s a secret gist, writes
+   `#gistID:prefs=<id>`, `PATCH`es thereafter.
+
+### Deferred (unchanged)
+
+- The OAuth "Sign in with GitHub" button + ~20-line token-exchange worker
+  (Response V, Option 2) — not built; PAT is v1 per your call. Drop-in later
+  behind the same `getToken` hook, no module change.
+- `gist://<id>/<file>@<sha>` history reads — gists are git-versioned, easy to
+  add later; out for v1.
+- A no-`window` Node demo — skipped (writes need a real PAT; the browser demo
+  is the live proof).
+
+## Bruce's Response VII
+
+I'm trying to test http://localhost:8000/demos/gist.html
+
+Can you please update that file with really detailed instructions for getting the token?  I've fished around my github account for several minutes, and have had no luck finding "Account Permissions"
+
+
+
 
 
 

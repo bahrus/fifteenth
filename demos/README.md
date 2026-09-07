@@ -1,8 +1,8 @@
 # demos
 
-Live, un-stubbed checks of the `jsonblob://` / `superjsonblob://` persistence
-path. The unit tests (`tests/test-jsonblob.html`) stub `fetch` for determinism;
-these hit real servers.
+Live, un-stubbed checks of the remote-protocol persistence paths
+(`jsonblob://` / `superjsonblob://`, `gist://`). The unit tests
+(`tests/test-*.html`) stub `fetch` for determinism; these hit real servers.
 
 ## `jsonblob.html` — browser, jsonblob.com
 
@@ -36,3 +36,21 @@ doesn't enforce CORS and the two services are wire-compatible, so the
 persistence logic exercised is identical. Uses an in-memory id-store (the
 `locationHash` default needs `window`) and a `SavingContext` (keeps `set()`'s
 change broadcast off `window.postMessage`).
+
+## `gist.html` — browser, GitHub Gist
+
+```
+npm run serve
+# open http://localhost:8000/demos/gist.html
+```
+
+Loads the real `fifteenth/gist.js`, calls `configureGist({ getToken })`, and
+runs a create → read → merge → read round-trip against a real **secret gist**
+on `api.github.com`. Paste a GitHub token with the **gist** scope into the page
+first (fine-grained PAT with *Gists: Read and write*, or a classic PAT with the
+`gist` scope) — it's kept in `localStorage` and sent only to `api.github.com`.
+The gist id lands in the page URL hash (`#gistID:<alias>=<id>`); reload reuses
+the same gist, **Forget id** starts a new one. `api.github.com` sends permissive
+CORS and there's no bot wall, so this works from any origin with no proxy — the
+only thing a browser can't do cross-origin is the OAuth `code`→token exchange,
+which the pasted PAT sidesteps.

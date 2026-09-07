@@ -39,10 +39,14 @@
  * through a proxy, or from a non-browser runtime. Point `baseURL` at a
  * self-hosted instance you control if you need it from a browser.
  */
-import { parseProtocolRef } from 'assign-gingerly/resolve/getValues.js';
 import { registerProtocol } from './protocolRegistry.js';
 import { writeThroughObject } from './set.js';
+import { resolveIdStore } from './aliasStore.js';
+import type { IdStore, IdStoreChoice, TokenProvider } from './aliasStore.js';
 import type { ProtocolHandler } from './ambient.js';
+
+// Re-exported so existing `import ... from 'fifteenth/jsonblob.js'` keeps working.
+export type { IdStore, TokenProvider };
 
 const KNOWN = ['jsonblob', 'superjsonblob'] as const;
 type ServiceName = (typeof KNOWN)[number];
@@ -52,22 +56,13 @@ const DEFAULT_BASE: Record<ServiceName, string> = {
     superjsonblob: 'https://superjsonblob.com',
 };
 
-export type TokenProvider = () => string | null | undefined | Promise<string | null | undefined>;
-
-/** Maps a local alias to a server-assigned blob id. */
-export interface IdStore {
-    get(alias: string): string | null | undefined | Promise<string | null | undefined>;
-    set(alias: string, id: string): void | Promise<void>;
-    delete?(alias: string): void | Promise<void>;
-}
-
 export interface JsonBlobServiceConfig {
     /** Override the service origin (self-hosted instance, proxy). */
     baseURL?: string;
     /** Called per request; a truthy result becomes `Authorization: Bearer <token>`. */
     getToken?: TokenProvider;
     /** Where alias→id mappings live. Default `'locationHash'`. */
-    idStore?: 'locationHash' | 'localStorage' | IdStore;
+    idStore?: IdStoreChoice;
 }
 
 export interface JsonBlobConfig {
@@ -75,51 +70,14 @@ export interface JsonBlobConfig {
     superjsonblob?: JsonBlobServiceConfig;
 }
 
-// ---- id-stores ----
+// ---- id-store ----
 
 function hashKey(service: ServiceName, alias: string): string {
     return `jsonBlobID:${service}:${alias}`;
 }
 
-function readHashParams(): URLSearchParams {
-    return new URLSearchParams(location.hash.replace(/^#/, ''));
-}
-
-function writeHashParams(params: URLSearchParams): void {
-    const hash = params.toString();
-    const url = `${location.pathname}${location.search}${hash ? '#' + hash : ''}`;
-    history.replaceState(history.state, '', url);
-}
-
-function locationHashStore(service: ServiceName): IdStore {
-    return {
-        get: (alias) => readHashParams().get(hashKey(service, alias)),
-        set: (alias, id) => {
-            const p = readHashParams();
-            p.set(hashKey(service, alias), id);
-            writeHashParams(p);
-        },
-        delete: (alias) => {
-            const p = readHashParams();
-            p.delete(hashKey(service, alias));
-            writeHashParams(p);
-        },
-    };
-}
-
-function localStorageStore(service: ServiceName): IdStore {
-    return {
-        get: (alias) => localStorage.getItem(hashKey(service, alias)),
-        set: (alias, id) => localStorage.setItem(hashKey(service, alias), id),
-        delete: (alias) => localStorage.removeItem(hashKey(service, alias)),
-    };
-}
-
-function resolveIdStore(service: ServiceName, cfg?: JsonBlobServiceConfig): IdStore {
-    const choice = cfg?.idStore ?? 'locationHash';
-    if (choice === 'locationHash') return locationHashStore(service);
-    if (choice === 'localStorage') return localStorageStore(service);
-    return choice;
+function idStoreFor(service: ServiceName, cfg?: JsonBlobServiceConfig): IdStore {
+    return resolveIdStore(cfg?.idStore, (alias) => hashKey(service, alias));
 }
 
 // ---- HTTP ----
@@ -133,7 +91,7 @@ interface Resolved {
 function resolveConfig(service: ServiceName, cfg?: JsonBlobServiceConfig): Resolved {
     return {
         base: (cfg?.baseURL ?? DEFAULT_BASE[service]).replace(/\/+$/, ''),
-        store: resolveIdStore(service, cfg),
+        store: idStoreFor(service, cfg),
         getToken: cfg?.getToken,
     };
 }

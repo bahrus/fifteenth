@@ -17,4 +17,7 @@ export { IDBObjectStore, indexedDBHandler } from './idb.js';
 export { registerProtocol } from './protocolRegistry.js';
 export type { ProtocolWriter } from './protocolRegistry.js';
 export { jsonBlobProtocols, configureJsonBlob } from './jsonblob.js';
-export type { JsonBlobConfig, JsonBlobServiceConfig, IdStore, TokenProvider } from './jsonblob.js';
+export type { JsonBlobConfig, JsonBlobServiceConfig } from './jsonblob.js';
+export { gistProtocols, configureGist } from './gist.js';
+export type { GistConfig } from './gist.js';
+export type { IdStore, IdStoreChoice, TokenProvider } from './aliasStore.js';

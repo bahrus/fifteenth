@@ -1,56 +1,63 @@
+/**
+ * jsonblob.ts — opt-in `jsonblob://` and `superjsonblob://` protocol support.
+ *
+ * Both services expose the same REST shape under `/api/jsonBlob`
+ * (`POST` create, `GET` read, `PUT` replace, `DELETE`). This module is NOT part
+ * of the default `protocols` bag — network latency, failure modes and auth are
+ * unlike the browser stores. Turn it on explicitly:
+ *
+ * ```js
+ * import { configureJsonBlob } from 'fifteenth/jsonblob.js';
+ * import { get, set } from 'fifteenth';
+ *
+ * configureJsonBlob();                       // public hosts, hash id-store
+ * await set('jsonblob://prefs?.theme', 'dark');
+ * const theme = await get('jsonblob://prefs?.theme');
+ * ```
+ *
+ * or, for use through assign-gingerly directly:
+ *
+ * ```js
+ * import { jsonBlobProtocols } from 'fifteenth/jsonblob.js';
+ * const protocols = { ...ambientProtocols, ...jsonBlobProtocols({ superjsonblob: { getToken } }) };
+ * ```
+ *
+ * ### The `key` is a local alias, not the blob id
+ *
+ * `jsonblob://prefs` names a logical slot; the real server-assigned blob id is
+ * looked up in an *id-store* (the URL hash by default, keyed
+ * `jsonBlobID:<protocol>:<alias>`). The first `set` to an unmapped alias `POST`s
+ * a new blob and records its id; later `set`s `PUT`. `get` on an unmapped alias
+ * returns `null`. Prefix the key with `=` (`jsonblob://=<id>`) to address a blob
+ * id directly and skip the id-store.
+ *
+ * ### CORS
+ *
+ * jsonblob.com sends `Access-Control-Allow-Origin: *` and exposes `Location` /
+ * `X-jsonblob-id`, so it works from any browser origin. **superjsonblob.com
+ * currently sends no CORS headers at all** — it is only reachable same-origin,
+ * through a proxy, or from a non-browser runtime. Point `baseURL` at a
+ * self-hosted instance you control if you need it from a browser.
+ */
 import { registerProtocol } from './protocolRegistry.js';
 import { writeThroughObject } from './set.js';
+import { resolveIdStore } from './aliasStore.js';
 const KNOWN = ['jsonblob', 'superjsonblob'];
 const DEFAULT_BASE = {
     jsonblob: 'https://jsonblob.com',
     superjsonblob: 'https://superjsonblob.com',
 };
-// ---- id-stores ----
+// ---- id-store ----
 function hashKey(service, alias) {
     return `jsonBlobID:${service}:${alias}`;
 }
-function readHashParams() {
-    return new URLSearchParams(location.hash.replace(/^#/, ''));
-}
-function writeHashParams(params) {
-    const hash = params.toString();
-    const url = `${location.pathname}${location.search}${hash ? '#' + hash : ''}`;
-    history.replaceState(history.state, '', url);
-}
-function locationHashStore(service) {
-    return {
-        get: (alias) => readHashParams().get(hashKey(service, alias)),
-        set: (alias, id) => {
-            const p = readHashParams();
-            p.set(hashKey(service, alias), id);
-            writeHashParams(p);
-        },
-        delete: (alias) => {
-            const p = readHashParams();
-            p.delete(hashKey(service, alias));
-            writeHashParams(p);
-        },
-    };
-}
-function localStorageStore(service) {
-    return {
-        get: (alias) => localStorage.getItem(hashKey(service, alias)),
-        set: (alias, id) => localStorage.setItem(hashKey(service, alias), id),
-        delete: (alias) => localStorage.removeItem(hashKey(service, alias)),
-    };
-}
-function resolveIdStore(service, cfg) {
-    const choice = cfg?.idStore ?? 'locationHash';
-    if (choice === 'locationHash')
-        return locationHashStore(service);
-    if (choice === 'localStorage')
-        return localStorageStore(service);
-    return choice;
+function idStoreFor(service, cfg) {
+    return resolveIdStore(cfg?.idStore, (alias) => hashKey(service, alias));
 }
 function resolveConfig(service, cfg) {
     return {
         base: (cfg?.baseURL ?? DEFAULT_BASE[service]).replace(/\/+$/, ''),
-        store: resolveIdStore(service, cfg),
+        store: idStoreFor(service, cfg),
         getToken: cfg?.getToken,
     };
 }

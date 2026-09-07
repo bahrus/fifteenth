@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>fifteenth — gist() tests</title>
+    <script type="importmap">
+        {
+            "imports": {
+                "fifteenth/": "/",
+                "assign-gingerly/": "/node_modules/assign-gingerly/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="test-complete"></div>
+    <script type="module">
+        import { get } from 'fifteenth/get.js';
+        import { set } from 'fifteenth/set.js';
+        import { configureGist, gistProtocols } from 'fifteenth/gist.js';
+        import { resolveValues } from 'assign-gingerly/resolve/resolveValues.js';
+
+        const results = [];
+        let passed = 0;
+        let failed = 0;
+
+        async function test(name, fn) {
+            try {
+                await fn();
+                passed++;
+                results.push(`PASS: ${name}`);
+            } catch (e) {
+                failed++;
+                results.push(`FAIL: ${name} — ${e.message || e}`);
+            }
+        }
+        function assert(actual, expected, msg) {
+            if (actual !== expected) throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+        }
+        function assertDeep(actual, expected, msg) {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+                throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+            }
+        }
+
+        // ---- in-memory fetch stub emulating api.github.com/gists ----
+
+        const realFetch = window.fetch;
+        const stub = { gists: new Map(), seq: 0, posts: 0, lastAuth: undefined };
+
+        function shape(files) {
+            const out = {};
+            for (const [name, content] of Object.entries(files)) {
+                out[name] = { filename: name, content, truncated: false, raw_url: `https://gist.stub/${name}` };
+            }
+            return out;
+        }
+        function json(status, obj, headers = {}) {
+            return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', ...headers } });
+        }
+
+        window.fetch = async (url, init = {}) => {
+            const u = new URL(url, location.href);
+            if (u.hostname !== 'api.github.com') return realFetch(url, init);
+
+            const method = (init.method || 'GET').toUpperCase();
+            const hdrs = init.headers || {};
+            stub.lastAuth = hdrs.Authorization || hdrs.authorization;
+
+            const item = u.pathname.match(/^\/gists\/([^/?#]+)$/);
+
+            if (u.pathname === '/gists' && method === 'POST') {
+                stub.posts++;
+                const id = `g${++stub.seq}`;
+                const body = JSON.parse(init.body);
+                const files = {};
+                for (const [n, f] of Object.entries(body.files)) files[n] = f.content;
+                stub.gists.set(id, files);
+                return json(201, { id, files: shape(files) }, { Location: `https://api.github.com/gists/${id}` });
+            }
+            if (item && method === 'GET') {
+                const g = stub.gists.get(item[1]);
+                if (!g) return json(404, { message: 'Not Found' });
+                return json(200, { id: item[1], files: shape(g) });
+            }
+            if (item && method === 'PATCH') {
+                const g = stub.gists.get(item[1]);
+                if (!g) return json(404, { message: 'Not Found' });
+                const body = JSON.parse(init.body);
+                for (const [n, f] of Object.entries(body.files)) {
+                    if (f === null) delete g[n]; else g[n] = f.content;
+                }
+                return json(200, { id: item[1], files: shape(g) });
+            }
+            if (item && method === 'DELETE') {
+                stub.gists.delete(item[1]);
+                return new Response('', { status: 204 });
+            }
+            return json(405, { message: 'not stubbed' });
+        };
+
+        function clearHash() {
+            history.replaceState(history.state, '', location.pathname + location.search);
+        }
+        function hashId(alias) {
+            return new URLSearchParams(location.hash.slice(1)).get(`gistID:${alias}`);
+        }
+
+        // ---- tests ----
+
+        await test('set (no chain) creates a gist, records its id in the hash; get reads it back', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://prefs', { a: 1 });
+            const id = hashId('prefs');
+            assert(typeof id === 'string' && id.length > 0, true, 'id recorded in hash');
+            assertDeep(await get('gist://prefs'), { a: 1 }, 'round-trip');
+        });
+
+        await test('set with accessor chain merges into the existing file (no clobber)', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://p2', { a: 1 });
+            await set('gist://p2?.b?.c', 9);
+            assertDeep(await get('gist://p2'), { a: 1, b: { c: 9 } }, 'merge');
+            await set('gist://p2?.b?.c', 10);
+            assertDeep(await get('gist://p2'), { a: 1, b: { c: 10 } }, 'overwrite leaf, keep sibling');
+        });
+
+        await test('get on an unmapped alias returns null and does not POST', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            const before = stub.posts;
+            assert(await get('gist://never'), null, 'null for unmapped');
+            assert(stub.posts, before, 'no POST on read');
+        });
+
+        await test('file segment selects a distinct file inside the same gist', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://multi/one.json', { which: 1 });
+            const id = hashId('multi');
+            await set('gist://multi/two.json', { which: 2 });
+            assert(hashId('multi'), id, 'same gist id reused for the second file');
+            assertDeep(await get('gist://multi/one.json'), { which: 1 }, 'file one');
+            assertDeep(await get('gist://multi/two.json'), { which: 2 }, 'file two');
+            assert(stub.gists.get(id) && Object.keys(stub.gists.get(id)).length, 2, 'gist holds two files');
+        });
+
+        await test('direct id form (=<id>/<file>) skips the id-store', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            const r = await window.fetch('https://api.github.com/gists', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ public: false, files: { 'data.json': { content: '{"seed":true}' } } }),
+            });
+            const { id } = await r.json();
+
+            assertDeep(await get(`gist://=${id}`), { seed: true }, 'direct get, default file');
+            await set(`gist://=${id}?.extra`, 5);
+            assertDeep(await get(`gist://=${id}`), { seed: true, extra: 5 }, 'direct set merge');
+            assert(hashId(`=${id}`), null, 'no hash entry for a direct id');
+        });
+
+        await test('gistProtocols() bag works with resolveValues', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://bag', { user: { name: 'Ada' } });
+            const protocols = gistProtocols({ getToken: () => 'tok' });
+            const out = await resolveValues({ name: 'gist://bag?.user?.name' }, {}, { protocols });
+            assertDeep(out, { name: 'Ada' }, 'resolveValues via bag');
+        });
+
+        await test('concurrent first writes to one alias create exactly one gist', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            const before = stub.posts;
+            await Promise.all([
+                set('gist://race?.x', 1),
+                set('gist://race?.y', 2),
+                set('gist://race?.z', 3),
+            ]);
+            assert(stub.posts - before, 1, 'one POST for three concurrent sets');
+            const v = await get('gist://race');
+            assert(v.x === 1 && v.y === 2 && v.z === 3, true, 'all three merged');
+        });
+
+        await test('getToken adds an Authorization: Bearer header', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok-123' });
+            stub.lastAuth = undefined;
+            await set('gist://authcheck', { n: 1 });
+            assert(stub.lastAuth, 'Bearer tok-123', 'auth header sent on write');
+        });
+
+        await test('idStore:"localStorage" keeps gist ids out of the URL hash', async () => {
+            clearHash();
+            localStorage.removeItem('gistID:lsalias');
+            configureGist({ getToken: () => 'tok', idStore: 'localStorage' });
+            await set('gist://lsalias', { n: 1 });
+            assert(hashId('lsalias'), null, 'nothing in hash');
+            assert(typeof localStorage.getItem('gistID:lsalias'), 'string', 'id in localStorage');
+            assertDeep(await get('gist://lsalias'), { n: 1 }, 'round-trip via localStorage store');
+            localStorage.removeItem('gistID:lsalias');
+        });
+
+        await test('a 404 on read drops the stale alias mapping', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            history.replaceState(history.state, '', location.pathname + '#gistID:ghost=g-does-not-exist');
+            assert(await get('gist://ghost'), null, 'missing gist → null');
+            assert(hashId('ghost'), null, 'stale mapping removed');
+        });
+
+        await test('custom defaultFile is honored', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok', defaultFile: 'state.json' });
+            await set('gist://df', { ok: 1 });
+            const id = hashId('df');
+            assert(Object.keys(stub.gists.get(id))[0], 'state.json', 'file created under custom default name');
+            assertDeep(await get('gist://df'), { ok: 1 }, 'round-trip via custom default file');
+        });
+
+        // ---- restore & report ----
+        window.fetch = realFetch;
+
+        const el = document.getElementById('test-complete');
+        if (failed === 0) {
+            el.textContent = `All ${passed} tests passed`;
+        } else {
+            el.textContent = `${failed} of ${passed + failed} tests failed:\n${results.filter(r => r.startsWith('FAIL')).join('\n')}`;
+        }
+        el.setAttribute('data-status', failed === 0 ? 'pass' : 'fail');
+        console.log(results.join('\n'));
+    </script>
+</body>
+</html>
