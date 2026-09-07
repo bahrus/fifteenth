@@ -222,6 +222,24 @@
             assertDeep(await get('gist://df'), { ok: 1 }, 'round-trip via custom default file');
         });
 
+        await test('a write whose content would be empty throws and issues no request', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+
+            const beforePosts = stub.posts;
+            let threw = false;
+            try { await set('gist://emptycreate', ''); } catch { threw = true; }
+            assert(threw, true, 'empty create rejects');
+            assert(stub.posts, beforePosts, 'no POST issued for an empty create');
+            assert(hashId('emptycreate'), null, 'no alias mapping recorded');
+
+            await set('gist://emptyupdate', { a: 1 });
+            let threw2 = false;
+            try { await set('gist://emptyupdate', ''); } catch { threw2 = true; }
+            assert(threw2, true, 'empty update rejects');
+            assertDeep(await get('gist://emptyupdate'), { a: 1 }, 'existing file left intact after a refused empty update');
+        });
+
         // ---- restore & report ----
         window.fetch = realFetch;
 

@@ -43,6 +43,9 @@
  * - GitHub can't merge one JSON key server-side, so an accessor-chain write is
  *   read-modify-write (`GET` gist → merge the file → `PATCH`), same semantics
  *   as the other stores. Concurrent writes in one tab are serialized per alias.
+ * - A gist file cannot be empty. A write whose content serializes to `''`
+ *   (`''`, `undefined`) throws rather than issuing a request GitHub would `422`
+ *   on create — and, worse, silently interpret as "delete this file" on update.
  * - Rate limit: 5000 requests/hour (authenticated).
  */
 import { registerProtocol } from './protocolRegistry.js';
@@ -121,6 +124,27 @@ function serialize(value: any): string {
     return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
 
+/**
+ * Serialize `value` for storage, rejecting a result GitHub's Gist API cannot
+ * accept: a file whose `content` is the empty string. On **create** that is a
+ * `422 {"field":"files","code":"missing_field"}`; on **update** GitHub reads an
+ * empty `content` as "delete this file" — a silent data loss. In every such
+ * case the caller passed something meaningless (`''`, `undefined`, a value that
+ * `JSON.stringify`s to `undefined`), so fail loudly here instead of at — or
+ * after — the network.
+ */
+function gistContent(value: any): string {
+    const content = serialize(value);
+    if (typeof content !== 'string' || content === '') {
+        throw new Error(
+            'gist write: a gist file cannot be empty — refusing to write ' +
+            (value === undefined ? 'undefined' : JSON.stringify(value)) +
+            ' (GitHub 422s an empty create and treats an empty update as deleting the file)',
+        );
+    }
+    return content;
+}
+
 /** The whole gist object, or `null` on 404 (gist absent / purged). */
 async function fetchGist(r: Resolved, id: string): Promise<any> {
     const resp = await fetch(`${r.base}/gists/${encodeURIComponent(id)}`, {
@@ -153,7 +177,7 @@ async function patchGist(r: Resolved, id: string, file: string, value: any): Pro
     const resp = await fetch(`${r.base}/gists/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         headers: await ghHeaders(r, true),
-        body: JSON.stringify({ files: { [file]: { content: serialize(value) } } }),
+        body: JSON.stringify({ files: { [file]: { content: gistContent(value) } } }),
     });
     if (!resp.ok) throw new Error(`gist PATCH ${id} → ${resp.status}${await briefBody(resp)}` + authHint(resp.status));
 }
@@ -165,7 +189,7 @@ async function createGist(r: Resolved, file: string, value: any): Promise<string
         body: JSON.stringify({
             ...(r.description !== undefined ? { description: r.description } : {}),
             public: r.public,
-            files: { [file]: { content: serialize(value) } },
+            files: { [file]: { content: gistContent(value) } },
         }),
     });
     if (!resp.ok) throw new Error(`gist POST → ${resp.status}${await briefBody(resp)}` + authHint(resp.status));
