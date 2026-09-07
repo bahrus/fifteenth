@@ -934,6 +934,35 @@ I'm trying to test http://localhost:8000/demos/gist.html
 
 Can you please update that file with really detailed instructions for getting the token?  I've fished around my github account for several minutes, and have had no luck finding "Account Permissions"
 
+## Claude's Response VII — detailed token steps added
+
+`demos/gist.html` now has two collapsible, numbered walkthroughs in the
+**"1 · Get a GitHub token"** card:
+
+- **Route A — classic token (default-open, recommended).** One checkbox.
+  Direct link: <https://github.com/settings/tokens/new?scopes=gist> — that
+  opens *Settings → Developer settings → Personal access tokens → **Tokens
+  (classic)** → Generate new token (classic)* with the single `gist` scope
+  pre-ticked and the note pre-filled. Set an expiration, **Generate token**,
+  copy the `ghp_…` value, paste, **Save token**. The full manual click-path is
+  spelled out too, in case the link rots.
+
+- **Route B — fine-grained token,** with the specific reason you couldn't find
+  it called out in a highlighted note:
+  - **"Account permissions" does not render until you select a Resource owner.**
+  - It is a *separate collapsed group **below** the entire "Repository
+    permissions" list* — you have to scroll past all of those to reach it.
+  - Gists live under **Account permissions → Gists → Read and write**
+    (Repository access can be "No access" — gists aren't repos).
+  - If your account is under an org that hasn't enabled fine-grained tokens,
+    the section can still be absent — Route A then.
+
+Also added: a "revoke any time at github.com/settings/tokens" line, and
+`kbd`-styled click paths. `demos/README.md` updated to match (leads with the
+classic-token link).
+
+No module change — this is demo-page docs only. Build + 12/12 tests still green.
+
 
 
 
