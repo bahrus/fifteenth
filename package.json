@@ -72,7 +72,7 @@
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "spa-ssi": "0.0.28",
-    "@types/node": "26.4.1",
+    "@types/node": "26.5.0",
     "typescript": "7.0.2"
   }
 }
