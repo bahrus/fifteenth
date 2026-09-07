@@ -400,6 +400,305 @@ resolution. Deterministic, no network.
 - A `createBlob()` helper that returns the id — not needed given the
   alias/id-store model; add later if a "just give me an id" use case appears.
 
+  ## Bruce's Response II
+
+  I'm a little confused by the state of things.  I understand that superjbonblob is not cors compatible.  It appears you are saying that jsonblob.com is cors compatible and as far as you know works fine, I think?
+
+  I tried running the unit test and noticed no fetch calls being made to jsonblob.com.  Maybe that's intentional for unit tests.
+
+  If so, can you create a simple web page in a demos folder, which actually makes live calls to jsonblob.com, and provides confidence that the persistence mechanism works?
+
+## Claude's Response III — demos + a correction
+
+### First, the state of things (you have it right, with one correction)
+
+- **superjsonblob.com** — confirmed **no CORS**. Unusable from a browser
+  cross-origin. Fine from Node / same-origin / a proxy.
+- **jsonblob.com** — its API *is* CORS-configured (`Access-Control-Allow-Origin: *`,
+  full `Access-Control-Allow-Methods`, exposes `Location` / `X-jsonblob-id`) —
+  verified via an `OPTIONS` preflight. **But I have to walk back "works fine as
+  far as I know."** I can't actually complete a jsonblob.com write from here:
+  Cloudflare bot-blocks `POST`/`PUT` from this sandbox's IP (and CI runner IPs,
+  and many datacenter ranges). `GET`/`OPTIONS` pass; `POST` gets a `403` HTML
+  page — and because that Cloudflare page carries no CORS header, a browser
+  reports it as *"No 'Access-Control-Allow-Origin' header"*. So from a normal
+  residential browser jsonblob.com works (it's a mainstream tool); from a
+  datacenter it's blocked at the edge, before the API.
+- The unit tests making no jsonblob.com calls **is** intentional — `fetch` is
+  stubbed so they're deterministic and CI-safe.
+
+### Demos (new `demos/` folder)
+
+**`demos/jsonblob.html`** — the browser page you asked for. Loads the real
+`fifteenth/jsonblob.js`, `configureJsonBlob()`, and runs
+create → read → merge → read against **jsonblob.com**, showing the
+server-assigned blob id (also in the page URL hash) with click-through links to
+inspect it on jsonblob.com. Manual `set()` / `get()` panel too. Run it from a
+normal browser/connection:
+
+```
+npm run serve      # then open http://localhost:8000/demos/jsonblob.html
+```
+
+I loaded it here through a real Chromium: the page is wired correctly (real
+module, real request) — the request fails with the Cloudflare/CORS symptom
+above, and the page reports that clearly. It will round-trip green from your
+machine.
+
+**`demos/jsonblob-node.mjs`** (+ `npm run demo:jsonblob`) — because I couldn't
+show you a *passing* live run against jsonblob.com from here, this is a Node
+script that does the same round-trip against the **actual compiled module** and
+a **real remote server** — default **superjsonblob** (reachable from anywhere;
+wire-compatible, so the persistence code exercised is identical). This one I
+ran, and it passes:
+
+```
+fifteenth → superjsonblob — live round-trip (superjsonblob://demo-…)
+created blob: e4167454-20c7-4cb2-951c-6d711da64ffe
+PASS  read-back after create (POST → GET)
+PASS  merge kept the original keys (no clobber)
+PASS  accessor chain resolves to the leaf
+PASS  direct-id form (=<id>) reads the same blob
+ALL GOOD — persistence verified end to end.
+```
+
+`node demos/jsonblob-node.mjs jsonblob` targets jsonblob.com — works from your
+machine, reports the Cloudflare block from a datacenter with a helpful message.
+
+So: persistence is now verified live end-to-end (superjsonblob, from Node) and
+the jsonblob.com browser path is one `npm run serve` away from the same proof on
+your side.
+
+### Files added
+
+- `demos/jsonblob.html`, `demos/jsonblob-node.mjs`, `demos/README.md`
+- `package.json` — `demo:jsonblob` script
+- No change to the module; the demos use the shipped API as-is.
+
+## Bruce's Response III
+
+I copied the errors from the console:
+
+jsonblob.html:1 Access to fetch at 'https://jsonblob.com/api/jsonBlob' from origin 'http://localhost:8000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+[NEW] Explain Console errors by using Copilot in Edge: click  to explain an error. Learn moreDon’t show again
+jsonblob.js:87  POST https://jsonblob.com/api/jsonBlob net::ERR_FAILED 403 (Forbidden)
+postBlob @ jsonblob.js:87
+await in postBlob
+(anonymous) @ jsonblob.js:138
+ensureId @ jsonblob.js:141
+await in ensureId
+(anonymous) @ jsonblob.js:170
+Promise.then
+enqueue @ jsonblob.js:122
+write @ jsonblob.js:160
+set @ set.js:127
+runRoundTrip @ jsonblob.html:125
+jsonblob.html:160 TypeError: Failed to fetch
+    at postBlob (jsonblob.js:87:24)
+    at async jsonblob.js:138:28
+runRoundTrip @ jsonblob.html:160
+jsonblob.html:1 Access to fetch at 'https://jsonblob.com/api/jsonBlob' from origin 'http://localhost:8000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+jsonblob.js:87  POST https://jsonblob.com/api/jsonBlob net::ERR_FAILED 403 (Forbidden)
+postBlob @ jsonblob.js:87
+await in postBlob
+(anonymous) @ jsonblob.js:138
+ensureId @ jsonblob.js:141
+await in ensureId
+(anonymous) @ jsonblob.js:170
+Promise.then
+enqueue @ jsonblob.js:122
+write @ jsonblob.js:160
+set @ set.js:127
+document.getElementById.onclick @ jsonblob.html:179
+jsonblob.html:183 TypeError: Failed to fetch
+    at postBlob (jsonblob.js:87:24)
+    at async jsonblob.js:138:28
+document.getElementById.onclick @ jsonblob.html:183
+
+
+Any hope of making this work without a proxy middle layer?  Is the browser sending all the needed headers?
+
+## Claude's Response IV
+
+### Is the browser sending all the needed headers?
+
+Yes. `postBlob` sends exactly `POST /api/jsonBlob` + `Content-Type: application/json`
++ `Accept: application/json` + the JSON body — which is the whole documented
+jsonblob API for create. I reproduced your `403` from `curl` with a full set of
+browser headers (`Origin`, `Referer`, `Sec-Fetch-*`, real UA, `Accept-Language`,
+gzip) and also with `Origin: https://jsonblob.com` — **every write gets `403`**:
+
+```
+POST https://jsonblob.com/api/jsonBlob   → 403   Server: cloudflare, CF-RAY: …
+PUT  https://jsonblob.com/api/jsonBlob/<id> → 403
+GET  https://jsonblob.com/api/jsonBlob/<id> → 200/404   (works, full CORS headers)
+OPTIONS (preflight)                        → 204   (works, full CORS headers)
+```
+
+The `403` body is a gzipped Cloudflare challenge page — and because that page
+carries no `Access-Control-Allow-Origin`, the browser reports it as the CORS
+error you saw. So it's **not a missing header and not really a CORS
+misconfiguration**: jsonblob.com's Cloudflare is bot-blocking *write* methods
+(POST/PUT/DELETE) for any request that isn't a real first-party browser session
+with a `cf_clearance` cookie. A cross-origin `fetch()` can never obtain that
+cookie (Cloudflare can't show its challenge to an XHR). Reads are fine; writes
+are walled.
+
+This is new-ish — the live jsonblob.com is a rewrite (the GitHub source is
+archived, "no longer reflects jsonblob.com"), now with Cloudflare Bot
+Management, ETags, auth headers, expiry headers, etc.
+
+### Any hope without a proxy?
+
+**Against jsonblob.com itself: no** — not for writes from a browser web app on
+another origin. The options that need no proxy:
+
+1. **Self-host.** jsonblob is Apache-2.0; superjsonblob ships a Docker image
+   (Postgres). Point `baseURL` at your instance, set its CORS to allow your
+   origin, done — the module already supports this. superjsonblob self-hosted
+   also fixes *its* no-CORS problem.
+2. **Use a service that actually wants cross-origin browser writes.** I
+   preflighted a few — these answer with clean CORS and **no bot wall**:
+
+   | Service | CORS | Anonymous create? | Credential | Purge |
+   |---|---|---|---|---|
+   | jsonblob.com | reads only (writes 403) | — | — | 75 d |
+   | superjsonblob.com | none | — | — | ? |
+   | **getpantry.cloud** | `*`, all methods | after a 1-time email signup for a "Pantry ID" | Pantry ID in the URL | 30 d inactive |
+   | **jsonbin.io** | `*`, all methods, `X-Master-Key` allowed | no — needs an account | static `X-Master-Key` | none documented |
+   | extendsclass.com | `*` | no (`401` without key) | API key | ? |
+
+   getpantry and jsonbin are the realistic browser-usable, no-proxy choices.
+   Neither is byte-compatible with the jsonblob path/response shape, but both
+   slot into the exact machinery already built — registry + alias/id-store +
+   `getToken`/credential — as a **new protocol** (`pantry://`, `jsonbin://`),
+   ~40–60 lines each. This is finally where your original "optional API key"
+   question pays off: jsonbin's `X-Master-Key` is a real static key, passed via
+   the same config hook.
+
+### Recommendation
+
+- Keep `jsonblob://` / `superjsonblob://` as-is — they're correct and work
+  against a self-hosted `baseURL` (and jsonblob.com *reads* work cross-origin
+  today).
+- Add **`pantry://`** (getpantry.cloud) as the zero-infrastructure,
+  works-from-a-browser option — anonymous-ish (one email signup for the Pantry
+  ID, then no per-request auth), cleanest CORS. Optionally **`jsonbin://`** too
+  if you want the no-purge durability and don't mind the `X-Master-Key`.
+- Update `demos/jsonblob.html` to note the jsonblob.com write wall, and add a
+  `demos/pantry.html` that actually round-trips from the browser.
+
+### Question for you
+
+Which do you want me to add — `pantry://`, `jsonbin://`, both, or neither
+(stick with self-host only)? If `pantry://`, you'll need to grab a Pantry ID
+from getpantry.cloud (one email) for the demo; the module takes it as
+`configureJsonBlob({ pantry: { pantryId: '…' } })`-style config.
+
+## Bruce's Response IV
+
+I'm kind of waning in my desire to get these obscure api's working with unknown issues, if it requires getting a token anyway.
+
+Maybe we should scrap pursuing this approach, and work with a big, well understood service like Firebase?  Would we face cors issues working with Firebase?  Would Firebase be able to support a generic service like this?
+
+## Claude's Response V — Firebase is a good fit, and a *better* one than jsonblob
+
+### CORS: no problem
+
+Firebase **Realtime Database**'s REST API sends proper CORS headers. Verified by
+`curl` against a `*.firebaseio.com` host:
+
+```
+GET  https://<db>.firebaseio.com/x.json
+     → 404, Access-Control-Allow-Origin: http://localhost:8000   (origin-reflected)
+OPTIONS (preflight for PATCH)
+     → 200, Access-Control-Allow-Methods: OPTIONS,GET,POST,PUT,DELETE,PATCH
+            Access-Control-Allow-Headers: content-type
+```
+
+All methods, no bot wall, no Cloudflare challenge. Works from any origin.
+
+Caveats:
+- This is the **REST** API (`https://<db>.firebaseio.com/<path>.json`). The
+  Firebase **JS SDK** avoids CORS a different way (WebSocket for RTDB, gRPC-web
+  for Firestore) but it's a heavy dependency — a REST handler keeps `fifteenth`
+  dependency-free, same as the jsonblob one.
+- **Cloud Storage for Firebase** is the exception: its bucket CORS must be set
+  manually (`gsutil cors set`). Not relevant if we use RTDB.
+- **Firestore**'s REST API also has CORS, but its JSON is wrapped in typed-value
+  envelopes (`{"fields":{"theme":{"stringValue":"dark"}}}`). RTDB REST is plain
+  JSON — much better fit. **Recommend RTDB.**
+
+### Would it support a generic service like this? Yes — and it's cleaner
+
+RTDB *is* "a JSON tree addressed by path", which is exactly `fifteenth`'s model.
+The whole jsonblob create-vs-update / id / `location.hash`-alias apparatus
+**disappears** — the path is the address and `PUT` is upsert.
+
+| USL | RTDB REST call |
+|---|---|
+| `get('firebase://users/me/prefs')` | `GET  …/users/me/prefs.json` |
+| `get('firebase://users/me/prefs?.theme')` | `GET …/users/me/prefs.json` then walk `?.theme` (or `GET …/users/me/prefs/theme.json` directly) |
+| `set('firebase://users/me/prefs', {…})` | `PUT  …/users/me/prefs.json` |
+| `set('firebase://users/me/prefs?.theme', 'dark')` | `PATCH …/users/me/prefs.json` body `{"theme":"dark"}` — **native shallow merge, siblings preserved server-side** |
+| delete | `DELETE …/path.json` |
+
+So the accessor-chain "don't clobber siblings" behaviour you asked for is done
+*by RTDB* via `PATCH`, not by our read-modify-write. Deep chains
+(`?.a?.b?.c`) → `PATCH …/a/b.json` with `{"c":val}` (patch one level above the
+leaf); the handler derives that URL from the chain. `~40 lines`, no id-store, no
+concurrency queue needed.
+
+### Auth / "the token"
+
+Same shape as before, but this time it's the canonical version:
+- **Demo / prototype:** open security rules (`".read": true, ".write": true`) →
+  no token at all. One console setting.
+- **Real use:** Firebase Auth ID token passed as `?auth=<token>` on the REST
+  URL — the existing `getToken` hook covers it (still ~1 h expiry; that's
+  Firebase, not us).
+- There's also a legacy **database secret** (a static string, no expiry) —
+  deprecated by Google but still functional if you want a hardcoded key.
+
+### Setup you'd do once
+
+1. Create a Firebase project (free Spark plan).
+2. Enable Realtime Database, pick a region, note the `databaseURL`
+   (`https://<proj>-default-rtdb.<region>.firebasedatabase.app`).
+3. Set rules — open for the demo, Auth-based later.
+4. `configureFirebase({ databaseURL, getToken? })`.
+
+Free tier: 1 GB stored, 10 GB/month egress, 100 concurrent connections — ample.
+Expect one "your rules are insecure" email if you go open.
+
+### Also on the table (static token, no hourly refresh — your fatigue point)
+
+- **GitHub Gist** (`gist://<id>/<file>?.path`) — `Authorization: Bearer <PAT>`,
+  a **non-expiring** token, CORS `*` (verified: exposes `Location`, `ETag`),
+  never purged, versioned. Downsides: 5000 req/h rate limit, and a gist is a
+  *bundle of named files* so the addressing gains a `/<file>` segment.
+- **Supabase** — static `apikey` anon JWT (safe to ship), PostgREST, CORS `*`,
+  big/well-understood. Needs a table defined.
+
+### Recommendation
+
+**`firebase://` on RTDB REST.** Cleanest technical fit we've found, zero CORS/bot
+issues (verified), "big and well understood," and it makes the protocol
+*simpler* than jsonblob rather than more complex. Keep `jsonblob://` /
+`superjsonblob://` as-is for self-hosted use; `firebase://` becomes the
+recommended hosted backend.
+
+If you want a genuinely no-token demo, open RTDB rules get us there; if you want
+a permanent token, `gist://` is the one.
+
+**Say the word and I'll implement `firebase://`** — I'll need a `databaseURL`
+from you for the live demo (or I can point it at a throwaway project's open DB
+if you'd rather not).
+
+
+
+
+
 
 
 

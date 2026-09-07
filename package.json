@@ -53,6 +53,7 @@
     "build": "tsc",
     "serve": "node ./node_modules/spa-ssi/serve.js",
     "test": "npm run build && playwright test",
+    "demo:jsonblob": "npm run build && node demos/jsonblob-node.mjs",
     "update": "ncu -u && npm install",
     "safari": "npx playwright wk http://localhost:8000",
     "chrome": "npx playwright cr http://localhost:8000"

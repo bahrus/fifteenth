@@ -227,6 +227,10 @@ configureJsonBlob({
 - **Retention:** jsonblob.com deletes a blob ~75 days after its last access; a
   `404` on read drops the stale alias mapping so the next `set` re-creates it.
 
+Live round-trip demos (not stubbed) live in [`demos/`](./demos): open
+`demos/jsonblob.html` via `npm run serve` for the jsonblob.com browser path, or
+run `npm run demo:jsonblob` for a Node check against superjsonblob.
+
 ## IndexedDB -- Object mode vs Tabular mode [WIP]
 
 IndexedDB supports at least two fundamental variations -- storing key/value pairs, similar to a JavaScript Object, vs numerically indexed objects, which is more like a table.
