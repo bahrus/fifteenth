@@ -1,6 +1,6 @@
 {
   "name": "fifteenth",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "The fifteenth standard - a common language for resource management across browser storage APIs",
   "homepage": "https://github.com/bahrus/fifteenth#readme",
   "bugs": {
