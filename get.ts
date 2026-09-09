@@ -13,8 +13,8 @@ import { getProtocolReader } from './protocolRegistry.js';
  * uses: `parseProtocolRef` splits the outer grammar, the {@link protocols} bag
  * resolves the key, and `getValue` walks the trailing `?.` accessor chain — so
  * a single USL and a whole pattern object resolve through exactly one code path.
- * Protocols registered via `registerProtocol` (e.g. `jsonblob://` after
- * `configureJsonBlob()`) are consulted when the bag has no handler.
+ * Protocols registered via `registerProtocol` (e.g. `gist://` after
+ * `configureGist()`) are consulted when the bag has no handler.
  *
  * Returns `null` when the resource (or any link in the accessor chain) is absent.
  */

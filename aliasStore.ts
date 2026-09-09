@@ -1,8 +1,8 @@
 /**
- * aliasStore.ts — the alias→id mapping shared by the opt-in remote-protocol
- * modules (`jsonblob.js`, `gist.js`).
+ * aliasStore.ts — the alias→id mapping used by the opt-in `gist://` protocol
+ * module (`gist.js`).
  *
- * A USL `key` for those protocols is a *local alias* (`gist://prefs`), not the
+ * A USL `key` for that protocol is a *local alias* (`gist://prefs`), not the
  * real server-assigned id. The alias is resolved to an id here; the first write
  * to an unmapped alias creates the remote resource and records its id.
  *

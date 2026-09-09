@@ -963,6 +963,52 @@ classic-token link).
 
 No module change — this is demo-page docs only. Build + 12/12 tests still green.
 
+## Bruce's Response VIII
+
+Please remove support for JSON Blob, as it doesn't feel solid enough to use, and just leave support for gist storage.  Please remove it from the README documentation.
+
+## Claude's Implementation Notes — jsonblob removed
+
+Done. `npm run build` clean; Playwright green — **9/9** (`get`, `set`, `gist`)
+across Chromium / Firefox / WebKit. The 3 jsonblob specs are gone with the code.
+
+`gist://` is untouched and still works exactly as in Response VI. The shared
+plumbing it inherited from the jsonblob work (`protocolRegistry`, `aliasStore`)
+stays — `gist.js` is its only consumer now.
+
+### Deleted
+
+| File | Was |
+|---|---|
+| `jsonblob.ts` / `jsonblob.js` | the `jsonblob://` + `superjsonblob://` handler |
+| `tests/test-jsonblob.html` / `tests/jsonblob.spec.ts` | its stubbed-transport suite |
+| `demos/jsonblob.html` | browser round-trip demo (jsonblob.com) |
+| `demos/jsonblob-node.mjs` | Node round-trip demo (superjsonblob) |
+
+### Edited
+
+- **`index.ts` / `index.js`** — dropped the `jsonBlobProtocols`,
+  `configureJsonBlob`, `JsonBlobConfig`, `JsonBlobServiceConfig` re-exports.
+- **`package.json`** — removed the `./jsonblob.js` `exports` entry and the
+  `demo:jsonblob` script.
+- **`README.md`** — removed the whole "Remote JSON blobs: `jsonblob://` and
+  `superjsonblob://`" section; dropped item 7 from the resource list (GitHub
+  Gists is now 7, signals 8, imports 9); reworded the one `jsonblob://` analogy
+  left inside the `gist://` section so it stands on its own.
+- **`demos/README.md`** — now gist-only (intro + the `gist.html` section).
+- **`aliasStore.ts` / `.js`, `protocolRegistry.ts` / `.js`, `get.ts` / `.js`,
+  `set.ts` / `.js`** — doc-comment mentions of `jsonblob.js` /
+  `configureJsonBlob()` retargeted to `gist.js` / `configureGist()`. No behavior
+  change.
+
+### Not touched
+
+- `Chats/JSONBlob/jsonblobProtocol.md` (this file) — kept as the design-history
+  log.
+- `be-persistent/node_modules/fifteenth/` still carries the old vendored copy
+  (jsonblob files included). It'll drop out on the next `npm install` / dependency
+  sync there; nothing in `be-persistent` imports it.
+
 
 
 

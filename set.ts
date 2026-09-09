@@ -55,7 +55,7 @@ function notify(usp: string, usl: string, ctx?: SavingContext): void {
  * Merge `val` into the object read from `read()` at `parts`, and hand the whole
  * (possibly newly created) root back to `write()`. Shared by the stores that
  * hold structured values (Web Storage, IndexedDB) and by the registered network
- * writers (`jsonblob.js`). `parts` must be non-empty.
+ * writers (`gist.js`). `parts` must be non-empty.
  */
 export function writeThroughObject(
     current: unknown,
@@ -134,8 +134,8 @@ async function setIndexedDB(key: string, parts: string[], val: any): Promise<voi
  * instead.
  *
  * `cookie` and `locationHash` hold plain strings and reject an accessor chain.
- * Protocols registered via `registerProtocol` (e.g. `jsonblob://` after
- * `configureJsonBlob()`) are dispatched to their writer before the built-ins.
+ * Protocols registered via `registerProtocol` (e.g. `gist://` after
+ * `configureGist()`) are dispatched to their writer before the built-ins.
  */
 export async function set(usl: string, val: any, ctx?: SavingContext): Promise<void> {
     const { protocol, key, path } = parseProtocolRef(usl);
