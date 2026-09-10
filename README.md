@@ -207,11 +207,25 @@ configureGist({
   description: 'my app state',    // set on gists this module creates
   idStore:     'locationHash',    // | 'localStorage' | custom { get, set, delete? }
   baseURL:     'https://api.github.com', // override for GitHub Enterprise / a proxy
+  rawBaseURL:  'https://gist.githubusercontent.com', // override the raw-file CDN
 });
 ```
 
 - **Direct id:** `gist://=<id>/data.json` addresses a gist id straight, skipping
   the id-store.
+- **Raw form:** `gist://<owner>/<id>/raw[/<sha>]/<file>` — the tail of a
+  `gist.githubusercontent.com` URL. **Reads** hit that CDN directly: no token,
+  no `/gists` JSON envelope, no API rate limit, and a `<sha>` pins an immutable
+  revision. **Writes** without a `<sha>` `PATCH` through the API as usual (need
+  `getToken`); a write to a pinned `<sha>` throws. This is the shape a future
+  import-map bare specifier — `<owner>/<id>/raw/<sha>/<file>` — would resolve to.
+
+  ```JavaScript
+  // read a published gist file straight off the CDN, unauthenticated
+  const markup = await get(
+    'gist://bahrus/78ec8e0827f6858ad9060f88f22576a0/raw/0c40975a1055e0b0b543b212e73010781577c0b7/markup.html'
+  );
+  ```
 - **Accessor chain:** `set('gist://prefs?.a?.b', v)` is read-modify-write
   (`GET` gist → merge the file → `PATCH`) — GitHub can't merge one JSON key
   server-side. Concurrent writes in one tab are serialized per alias; across

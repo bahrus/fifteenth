@@ -25,6 +25,17 @@
  * `data.json`. Prefix the alias with `=` (`gist://=<id>/data.json`) to address
  * a gist id directly and skip the id-store.
  *
+ * ### Raw form: `gist://<owner>/<id>/raw[/<sha>]/<file>`
+ *
+ * The tail of a `gist.githubusercontent.com` URL, addressed directly. **Reads**
+ * hit that CDN (`https://gist.githubusercontent.com/<owner>/<id>/raw[/<sha>]/<file>`)
+ * — no token, no `/gists` JSON envelope, no 5000/h API rate limit, and a `<sha>`
+ * pins an immutable revision. **Writes** without a `<sha>` `PATCH` the gist
+ * through the API as usual (needs `getToken`); a write to a pinned `<sha>`
+ * throws. `configureGist({ rawBaseURL })` overrides the CDN origin. This is the
+ * shape a future import-map bare specifier (`<owner>/<id>/raw/<sha>/<file>`)
+ * would resolve to.
+ *
  * ### Auth
  *
  * Reads of a public gist need no token. **Creating or updating a gist needs a
@@ -52,6 +63,7 @@ import { registerProtocol } from './protocolRegistry.js';
 import { writeThroughObject } from './set.js';
 import { resolveIdStore, makeQueue } from './aliasStore.js';
 const DEFAULT_BASE = 'https://api.github.com';
+const DEFAULT_RAW_BASE = 'https://gist.githubusercontent.com';
 const DEFAULT_FILE = 'data.json';
 function hashKey(alias) {
     return `gistID:${alias}`;
@@ -59,6 +71,7 @@ function hashKey(alias) {
 function resolveConfig(cfg) {
     return {
         base: (cfg?.baseURL ?? DEFAULT_BASE).replace(/\/+$/, ''),
+        rawBase: (cfg?.rawBaseURL ?? DEFAULT_RAW_BASE).replace(/\/+$/, ''),
         store: resolveIdStore(cfg?.idStore, hashKey),
         getToken: cfg?.getToken,
         public: cfg?.public ?? false,
@@ -141,6 +154,28 @@ async function fileValue(r, gist, file) {
         return content; // tolerate a non-JSON file, same as the web-storage handler
     }
 }
+/**
+ * Read one file straight off the raw CDN (`gist://<owner>/<id>/raw[/<sha>]/<file>`)
+ * — unauthenticated, no `/gists` envelope. `null` on 404; parsed JSON when it
+ * parses, the raw text otherwise (same tolerance as {@link fileValue}).
+ */
+async function readRaw(r, raw, file) {
+    const url = `${r.rawBase}/${raw.owner}/${raw.id}/raw/${raw.sha ? raw.sha + '/' : ''}${file}`;
+    const resp = await fetch(url);
+    if (resp.status === 404)
+        return null;
+    if (!resp.ok)
+        throw new Error(`gist raw GET ${url} → ${resp.status}${await briefBody(resp)}`);
+    const text = await resp.text();
+    if (text === '')
+        return null;
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        return text;
+    }
+}
 async function patchGist(r, id, file, value) {
     const resp = await fetch(`${r.base}/gists/${encodeURIComponent(id)}`, {
         method: 'PATCH',
@@ -177,12 +212,20 @@ function authHint(status) {
         : '';
 }
 function parseKey(key, defaultFile) {
+    // Raw-CDN form: <owner>/<id>/raw[/<sha>]/<file> (3rd segment is literally "raw").
+    const segs = key.split('/');
+    if (segs.length >= 4 && segs[2] === 'raw') {
+        const [owner, id, , shaOrFile, ...rest] = segs;
+        const sha = rest.length > 0 ? shaOrFile : null;
+        const file = (rest.length > 0 ? rest.join('/') : shaOrFile) || defaultFile;
+        return { alias: null, literalId: id, file, raw: { owner, id, sha } };
+    }
     const slash = key.indexOf('/');
     const head = slash === -1 ? key : key.slice(0, slash);
     const file = slash === -1 ? defaultFile : key.slice(slash + 1) || defaultFile;
     if (head.startsWith('='))
-        return { alias: null, literalId: head.slice(1), file };
-    return { alias: head, literalId: null, file };
+        return { alias: null, literalId: head.slice(1), file, raw: null };
+    return { alias: head, literalId: null, file, raw: null };
 }
 // ---- handler construction ----
 function makeGist(cfg) {
@@ -207,7 +250,9 @@ function makeGist(cfg) {
         return p;
     }
     const read = async (key) => {
-        const { alias, literalId, file } = parseKey(key, r.defaultFile);
+        const { alias, literalId, file, raw } = parseKey(key, r.defaultFile);
+        if (raw)
+            return readRaw(r, raw, file);
         const id = literalId ?? (await r.store.get(alias)) ?? null;
         if (!id)
             return null;
@@ -220,7 +265,11 @@ function makeGist(cfg) {
         return fileValue(r, gist, file);
     };
     const write = (key, chain, val) => {
-        const { alias, literalId, file } = parseKey(key, r.defaultFile);
+        const { alias, literalId, file, raw } = parseKey(key, r.defaultFile);
+        if (raw?.sha) {
+            return Promise.reject(new Error(`gist write: cannot write to a pinned revision (${raw.sha}) — ` +
+                `drop the sha: gist://${raw.owner}/${raw.id}/raw/${file}`));
+        }
         return enqueue(literalId ?? alias, async () => {
             if (chain.length === 0) {
                 if (literalId !== null) {

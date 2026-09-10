@@ -61,6 +61,19 @@
 
         window.fetch = async (url, init = {}) => {
             const u = new URL(url, location.href);
+
+            // Raw CDN: /<owner>/<id>/raw/[<sha>/]<file>  — GET only, no auth.
+            if (u.hostname === 'gist.githubusercontent.com') {
+                stub.rawGets = (stub.rawGets || 0) + 1;
+                stub.lastRawUrl = u.href;
+                const m = u.pathname.match(/^\/([^/]+)\/([^/]+)\/raw\/(?:([0-9a-f]{7,40})\/)?(.+)$/);
+                if (!m) return new Response('bad raw path', { status: 400 });
+                const [, , id, , file] = m;
+                const g = stub.gists.get(id);
+                if (!g || !(file in g)) return new Response('Not Found', { status: 404 });
+                return new Response(g[file], { status: 200, headers: { 'Content-Type': 'text/plain' } });
+            }
+
             if (u.hostname !== 'api.github.com') return realFetch(url, init);
 
             const method = (init.method || 'GET').toUpperCase();
@@ -238,6 +251,69 @@
             try { await set('gist://emptyupdate', ''); } catch { threw2 = true; }
             assert(threw2, true, 'empty update rejects');
             assertDeep(await get('gist://emptyupdate'), { a: 1 }, 'existing file left intact after a refused empty update');
+        });
+
+        await test('raw form: gist://<owner>/<id>/raw/<file> reads via the CDN, no API call', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://rawsrc', { hi: 'there', n: 7 });
+            const id = hashId('rawsrc');
+
+            stub.rawGets = 0;
+            const beforePosts = stub.posts;
+            assertDeep(await get(`gist://octo/${id}/raw/data.json`), { hi: 'there', n: 7 }, 'raw read parses JSON');
+            assert(stub.rawGets, 1, 'went to gist.githubusercontent.com');
+            assert(stub.posts, beforePosts, 'no API write');
+            assert(/gist\.githubusercontent\.com\/octo\/.*\/raw\/data\.json$/.test(stub.lastRawUrl), true, 'CDN url shape');
+        });
+
+        await test('raw form: accessor chain resolves against the CDN read', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://rawchain', { user: { name: 'Ada' } });
+            const id = hashId('rawchain');
+            assert(await get(`gist://x/${id}/raw/data.json?.user?.name`), 'Ada', 'chain over raw read');
+        });
+
+        await test('raw form: a pinned <sha> is used in the URL and reads latest content from the stub', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://rawpin', { v: 1 });
+            const id = hashId('rawpin');
+            const sha = '0c40975a1055e0b0b543b212e73010781577c0b7';
+            stub.lastRawUrl = '';
+            assertDeep(await get(`gist://me/${id}/raw/${sha}/data.json`), { v: 1 }, 'pinned raw read');
+            assert(stub.lastRawUrl.includes(`/raw/${sha}/data.json`), true, 'sha appears in the CDN url');
+        });
+
+        await test('raw form: unknown gist → null', async () => {
+            configureGist({ getToken: () => 'tok' });
+            assert(await get('gist://nobody/deadbeefdeadbeef/raw/data.json'), null, 'missing raw → null');
+        });
+
+        await test('raw form: write without a sha PATCHes the gist through the API', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://rawwrite', { a: 1 });
+            const id = hashId('rawwrite');
+
+            const beforePosts = stub.posts;
+            await set(`gist://owner/${id}/raw/data.json`, { a: 1, b: 2 });
+            assert(stub.posts, beforePosts, 'no new gist created');
+            assertDeep(await get(`gist://=${id}/data.json`), { a: 1, b: 2 }, 'API round-trip sees the raw-form write');
+
+            // non-JSON string tolerated on the raw read path too
+            await set(`gist://owner/${id}/raw/data.json`, '<b>hi</b>');
+            assert(await get(`gist://owner/${id}/raw/data.json`), '<b>hi</b>', 'raw read returns non-JSON text as-is');
+        });
+
+        await test('raw form: writing to a pinned <sha> throws', async () => {
+            configureGist({ getToken: () => 'tok' });
+            let threw = false;
+            try {
+                await set('gist://o/abcabcabcabc/raw/0c40975a1055e0b0b543b212e73010781577c0b7/data.json', { x: 1 });
+            } catch { threw = true; }
+            assert(threw, true, 'pinned-revision write rejected');
         });
 
         // ---- restore & report ----

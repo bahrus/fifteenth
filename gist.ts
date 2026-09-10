@@ -25,6 +25,17 @@
  * `data.json`. Prefix the alias with `=` (`gist://=<id>/data.json`) to address
  * a gist id directly and skip the id-store.
  *
+ * ### Raw form: `gist://<owner>/<id>/raw[/<sha>]/<file>`
+ *
+ * The tail of a `gist.githubusercontent.com` URL, addressed directly. **Reads**
+ * hit that CDN (`https://gist.githubusercontent.com/<owner>/<id>/raw[/<sha>]/<file>`)
+ * — no token, no `/gists` JSON envelope, no 5000/h API rate limit, and a `<sha>`
+ * pins an immutable revision. **Writes** without a `<sha>` `PATCH` the gist
+ * through the API as usual (needs `getToken`); a write to a pinned `<sha>`
+ * throws. `configureGist({ rawBaseURL })` overrides the CDN origin. This is the
+ * shape a future import-map bare specifier (`<owner>/<id>/raw/<sha>/<file>`)
+ * would resolve to.
+ *
  * ### Auth
  *
  * Reads of a public gist need no token. **Creating or updating a gist needs a
@@ -57,11 +68,14 @@ import type { ProtocolHandler } from './ambient.js';
 export type { IdStore, TokenProvider };
 
 const DEFAULT_BASE = 'https://api.github.com';
+const DEFAULT_RAW_BASE = 'https://gist.githubusercontent.com';
 const DEFAULT_FILE = 'data.json';
 
 export interface GistConfig {
     /** Override the API origin (GitHub Enterprise, a proxy). Default `https://api.github.com`. */
     baseURL?: string;
+    /** Override the raw-file CDN origin for `gist://<owner>/<id>/raw/…` reads. Default `https://gist.githubusercontent.com`. */
+    rawBaseURL?: string;
     /** Returns a GitHub token with the `gist` scope. Called per request; may be async. */
     getToken?: TokenProvider;
     /** Where alias→gist-id mappings live. Default `'locationHash'`. */
@@ -76,6 +90,7 @@ export interface GistConfig {
 
 interface Resolved {
     base: string;
+    rawBase: string;
     store: IdStore;
     getToken?: TokenProvider;
     public: boolean;
@@ -90,6 +105,7 @@ function hashKey(alias: string): string {
 function resolveConfig(cfg?: GistConfig): Resolved {
     return {
         base: (cfg?.baseURL ?? DEFAULT_BASE).replace(/\/+$/, ''),
+        rawBase: (cfg?.rawBaseURL ?? DEFAULT_RAW_BASE).replace(/\/+$/, ''),
         store: resolveIdStore(cfg?.idStore, hashKey),
         getToken: cfg?.getToken,
         public: cfg?.public ?? false,
@@ -173,6 +189,25 @@ async function fileValue(r: Resolved, gist: any, file: string): Promise<any> {
     }
 }
 
+/**
+ * Read one file straight off the raw CDN (`gist://<owner>/<id>/raw[/<sha>]/<file>`)
+ * — unauthenticated, no `/gists` envelope. `null` on 404; parsed JSON when it
+ * parses, the raw text otherwise (same tolerance as {@link fileValue}).
+ */
+async function readRaw(r: Resolved, raw: RawRef, file: string): Promise<any> {
+    const url = `${r.rawBase}/${raw.owner}/${raw.id}/raw/${raw.sha ? raw.sha + '/' : ''}${file}`;
+    const resp = await fetch(url);
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw new Error(`gist raw GET ${url} → ${resp.status}${await briefBody(resp)}`);
+    const text = await resp.text();
+    if (text === '') return null;
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
 async function patchGist(r: Resolved, id: string, file: string, value: any): Promise<void> {
     const resp = await fetch(`${r.base}/gists/${encodeURIComponent(id)}`, {
         method: 'PATCH',
@@ -212,21 +247,40 @@ function authHint(status: number): string {
 
 // ---- alias resolution ----
 
+/** Parsed `gist://<owner>/<id>/raw[/<sha>]/<file>` reference. */
+interface RawRef {
+    owner: string;
+    id: string;
+    /** Pinned revision sha, or `null` for "latest". */
+    sha: string | null;
+}
+
 interface Addr {
-    /** `null` when the key is a literal id. */
+    /** `null` when the key is a literal id or a raw ref. */
     alias: string | null;
-    /** Set when the key is `=<id>`. */
+    /** Set when the key is `=<id>` or a raw ref (the gist id, for the write path). */
     literalId: string | null;
     /** File within the gist. */
     file: string;
+    /** Set for the `gist://<owner>/<id>/raw[/<sha>]/<file>` form. */
+    raw: RawRef | null;
 }
 
 function parseKey(key: string, defaultFile: string): Addr {
+    // Raw-CDN form: <owner>/<id>/raw[/<sha>]/<file> (3rd segment is literally "raw").
+    const segs = key.split('/');
+    if (segs.length >= 4 && segs[2] === 'raw') {
+        const [owner, id, , shaOrFile, ...rest] = segs;
+        const sha = rest.length > 0 ? shaOrFile : null;
+        const file = (rest.length > 0 ? rest.join('/') : shaOrFile) || defaultFile;
+        return { alias: null, literalId: id, file, raw: { owner, id, sha } };
+    }
+
     const slash = key.indexOf('/');
     const head = slash === -1 ? key : key.slice(0, slash);
     const file = slash === -1 ? defaultFile : key.slice(slash + 1) || defaultFile;
-    if (head.startsWith('=')) return { alias: null, literalId: head.slice(1), file };
-    return { alias: head, literalId: null, file };
+    if (head.startsWith('=')) return { alias: null, literalId: head.slice(1), file, raw: null };
+    return { alias: head, literalId: null, file, raw: null };
 }
 
 // ---- handler construction ----
@@ -255,7 +309,8 @@ function makeGist(cfg?: GistConfig) {
     }
 
     const read: ProtocolHandler = async (key: string) => {
-        const { alias, literalId, file } = parseKey(key, r.defaultFile);
+        const { alias, literalId, file, raw } = parseKey(key, r.defaultFile);
+        if (raw) return readRaw(r, raw, file);
         const id = literalId ?? (await r.store.get(alias!)) ?? null;
         if (!id) return null;
 
@@ -268,7 +323,13 @@ function makeGist(cfg?: GistConfig) {
     };
 
     const write = (key: string, chain: string[], val: any): Promise<void> => {
-        const { alias, literalId, file } = parseKey(key, r.defaultFile);
+        const { alias, literalId, file, raw } = parseKey(key, r.defaultFile);
+        if (raw?.sha) {
+            return Promise.reject(new Error(
+                `gist write: cannot write to a pinned revision (${raw.sha}) — ` +
+                `drop the sha: gist://${raw.owner}/${raw.id}/raw/${file}`,
+            ));
+        }
         return enqueue(literalId ?? alias!, async () => {
             if (chain.length === 0) {
                 if (literalId !== null) {
