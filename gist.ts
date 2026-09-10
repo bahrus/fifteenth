@@ -36,6 +36,15 @@
  * shape a future import-map bare specifier (`<owner>/<id>/raw/<sha>/<file>`)
  * would resolve to.
  *
+ * ### Reading an alias / id via the CDN: `configureGist({ readVia: 'raw' })`
+ *
+ * Makes the ordinary alias and `=<id>` reads fetch
+ * `gist.githubusercontent.com/raw/<id>/<file>` (owner-less — GitHub serves that)
+ * instead of `GET api.github.com/gists/<id>`. Same win as the raw form (no
+ * token, no rate limit) without spelling out the owner, but the CDN is cached so
+ * a read can lag a write by a minute or two. Writes are unaffected — always the
+ * API. Default `'api'`.
+ *
  * ### Auth
  *
  * Reads of a public gist need no token. **Creating or updating a gist needs a
@@ -78,6 +87,15 @@ export interface GistConfig {
     rawBaseURL?: string;
     /** Returns a GitHub token with the `gist` scope. Called per request; may be async. */
     getToken?: TokenProvider;
+    /**
+     * How alias / id-form **reads** fetch: `'api'` (default) does
+     * `GET api.github.com/gists/<id>` — always fresh, costs an API request;
+     * `'raw'` does `GET gist.githubusercontent.com/raw/<id>/<file>` — no token,
+     * no `/gists` envelope, no rate limit, but CDN-cached so it can lag a write
+     * by a minute or two. Writes always go through the API. The explicit raw
+     * form (`gist://<owner>/<id>/raw/…`) reads via the CDN regardless.
+     */
+    readVia?: 'api' | 'raw';
     /** Where alias→gist-id mappings live. Default `'locationHash'`. */
     idStore?: IdStoreChoice;
     /** Visibility of gists this module creates. Default `false` (secret, i.e. unlisted). */
@@ -91,6 +109,7 @@ export interface GistConfig {
 interface Resolved {
     base: string;
     rawBase: string;
+    readVia: 'api' | 'raw';
     store: IdStore;
     getToken?: TokenProvider;
     public: boolean;
@@ -106,6 +125,7 @@ function resolveConfig(cfg?: GistConfig): Resolved {
     return {
         base: (cfg?.baseURL ?? DEFAULT_BASE).replace(/\/+$/, ''),
         rawBase: (cfg?.rawBaseURL ?? DEFAULT_RAW_BASE).replace(/\/+$/, ''),
+        readVia: cfg?.readVia ?? 'api',
         store: resolveIdStore(cfg?.idStore, hashKey),
         getToken: cfg?.getToken,
         public: cfg?.public ?? false,
@@ -190,12 +210,19 @@ async function fileValue(r: Resolved, gist: any, file: string): Promise<any> {
 }
 
 /**
- * Read one file straight off the raw CDN (`gist://<owner>/<id>/raw[/<sha>]/<file>`)
- * — unauthenticated, no `/gists` envelope. `null` on 404; parsed JSON when it
- * parses, the raw text otherwise (same tolerance as {@link fileValue}).
+ * Read one file straight off the raw CDN — unauthenticated, no `/gists`
+ * envelope. `null` on 404; parsed JSON when it parses, the raw text otherwise
+ * (same tolerance as {@link fileValue}).
+ *
+ * With an `owner` it's `…/<owner>/<id>/raw[/<sha>]/<file>` (the explicit
+ * `gist://<owner>/…` form). Without one — `readVia: 'raw'` on an alias/id — it's
+ * the owner-less `…/raw/<id>[/<sha>]/<file>`, which GitHub also serves.
  */
 async function readRaw(r: Resolved, raw: RawRef, file: string): Promise<any> {
-    const url = `${r.rawBase}/${raw.owner}/${raw.id}/raw/${raw.sha ? raw.sha + '/' : ''}${file}`;
+    const rev = raw.sha ? raw.sha + '/' : '';
+    const url = raw.owner
+        ? `${r.rawBase}/${raw.owner}/${raw.id}/raw/${rev}${file}`
+        : `${r.rawBase}/raw/${raw.id}/${rev}${file}`;
     const resp = await fetch(url);
     if (resp.status === 404) return null;
     if (!resp.ok) throw new Error(`gist raw GET ${url} → ${resp.status}${await briefBody(resp)}`);
@@ -247,9 +274,9 @@ function authHint(status: number): string {
 
 // ---- alias resolution ----
 
-/** Parsed `gist://<owner>/<id>/raw[/<sha>]/<file>` reference. */
+/** A raw-CDN read target. `owner` is `null` for the owner-less `…/raw/<id>/…` form. */
 interface RawRef {
-    owner: string;
+    owner: string | null;
     id: string;
     /** Pinned revision sha, or `null` for "latest". */
     sha: string | null;
@@ -314,6 +341,9 @@ function makeGist(cfg?: GistConfig) {
         const id = literalId ?? (await r.store.get(alias!)) ?? null;
         if (!id) return null;
 
+        // `readVia: 'raw'` — skip the API, read the file off the CDN by id.
+        if (r.readVia === 'raw') return readRaw(r, { owner: null, id, sha: null }, file);
+
         const gist = await fetchGist(r, id);
         if (gist === null) {
             if (literalId === null) await r.store.delete?.(alias!); // purged → drop stale mapping
@@ -325,9 +355,11 @@ function makeGist(cfg?: GistConfig) {
     const write = (key: string, chain: string[], val: any): Promise<void> => {
         const { alias, literalId, file, raw } = parseKey(key, r.defaultFile);
         if (raw?.sha) {
+            const unpinned = raw.owner
+                ? `gist://${raw.owner}/${raw.id}/raw/${file}`
+                : `gist://=${raw.id}/${file}`;
             return Promise.reject(new Error(
-                `gist write: cannot write to a pinned revision (${raw.sha}) — ` +
-                `drop the sha: gist://${raw.owner}/${raw.id}/raw/${file}`,
+                `gist write: cannot write to a pinned revision (${raw.sha}) — drop the sha: ${unpinned}`,
             ));
         }
         return enqueue(literalId ?? alias!, async () => {

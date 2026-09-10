@@ -62,13 +62,16 @@
         window.fetch = async (url, init = {}) => {
             const u = new URL(url, location.href);
 
-            // Raw CDN: /<owner>/<id>/raw/[<sha>/]<file>  — GET only, no auth.
+            // Raw CDN — GET only, no auth. Two shapes GitHub serves:
+            //   /<owner>/<id>/raw/[<sha>/]<file>   (explicit owner)
+            //   /raw/<id>/[<sha>/]<file>           (owner-less, used by readVia:'raw')
             if (u.hostname === 'gist.githubusercontent.com') {
                 stub.rawGets = (stub.rawGets || 0) + 1;
                 stub.lastRawUrl = u.href;
-                const m = u.pathname.match(/^\/([^/]+)\/([^/]+)\/raw\/(?:([0-9a-f]{7,40})\/)?(.+)$/);
+                let m = u.pathname.match(/^\/raw\/([^/]+)\/(?:[0-9a-f]{7,40}\/)?(.+)$/);
+                if (!m) m = u.pathname.match(/^\/[^/]+\/([^/]+)\/raw\/(?:[0-9a-f]{7,40}\/)?(.+)$/);
                 if (!m) return new Response('bad raw path', { status: 400 });
-                const [, , id, , file] = m;
+                const [, id, file] = m;
                 const g = stub.gists.get(id);
                 if (!g || !(file in g)) return new Response('Not Found', { status: 404 });
                 return new Response(g[file], { status: 200, headers: { 'Content-Type': 'text/plain' } });
@@ -314,6 +317,42 @@
                 await set('gist://o/abcabcabcabc/raw/0c40975a1055e0b0b543b212e73010781577c0b7/data.json', { x: 1 });
             } catch { threw = true; }
             assert(threw, true, 'pinned-revision write rejected');
+        });
+
+        await test('readVia:"raw" reads an alias off the owner-less CDN url, writes still go to the API', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok', readVia: 'raw' });
+
+            // create still POSTs the API
+            const beforePosts = stub.posts;
+            await set('gist://rv', { a: 1 });
+            assert(stub.posts, beforePosts + 1, 'create went to the API');
+            const id = hashId('rv');
+
+            // read goes to gist.githubusercontent.com/raw/<id>/<file> — no owner, no API GET
+            stub.rawGets = 0;
+            assertDeep(await get('gist://rv'), { a: 1 }, 'alias read via CDN');
+            assert(stub.rawGets, 1, 'one CDN GET');
+            assert(/gist\.githubusercontent\.com\/raw\/[^/]+\/data\.json$/.test(stub.lastRawUrl), true, 'owner-less CDN url');
+
+            // update still PATCHes the API, and the next raw read reflects it
+            await set('gist://rv?.b', 2);
+            assertDeep(await get('gist://rv'), { a: 1, b: 2 }, 'CDN read after an API merge');
+        });
+
+        await test('readVia:"raw" with an =<id> reads the CDN; an unmapped alias is null with no request', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok', readVia: 'raw' });
+            await set('gist://direct', { z: 9 });
+            const id = hashId('direct');
+
+            stub.rawGets = 0;
+            assertDeep(await get(`gist://=${id}`), { z: 9 }, '=<id> read via CDN');
+            assert(stub.rawGets, 1, 'CDN GET for =<id>');
+
+            stub.rawGets = 0;
+            assert(await get('gist://nevermapped'), null, 'unmapped alias → null');
+            assert(stub.rawGets, 0, 'no CDN request when there is no id');
         });
 
         // ---- restore & report ----

@@ -208,6 +208,7 @@ configureGist({
   idStore:     'locationHash',    // | 'localStorage' | custom { get, set, delete? }
   baseURL:     'https://api.github.com', // override for GitHub Enterprise / a proxy
   rawBaseURL:  'https://gist.githubusercontent.com', // override the raw-file CDN
+  readVia:     'api',             // 'raw' → read alias/id off the CDN, not the API
 });
 ```
 
@@ -226,6 +227,11 @@ configureGist({
     'gist://bahrus/78ec8e0827f6858ad9060f88f22576a0/raw/0c40975a1055e0b0b543b212e73010781577c0b7/markup.html'
   );
   ```
+- **`readVia: 'raw'`:** make ordinary alias / `=<id>` **reads** fetch
+  `gist.githubusercontent.com/raw/<id>/<file>` (owner-less — GitHub serves that
+  shape) instead of `GET /gists/<id>`. Same no-token / no-rate-limit win as the
+  raw form without spelling out the owner. The CDN is cached, so a read can lag
+  a write by a minute or two; writes still go through the API.
 - **Accessor chain:** `set('gist://prefs?.a?.b', v)` is read-modify-write
   (`GET` gist → merge the file → `PATCH`) — GitHub can't merge one JSON key
   server-side. Concurrent writes in one tab are serialized per alias; across
