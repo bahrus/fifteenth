@@ -38,12 +38,17 @@
  *
  * ### Reading an alias / id via the CDN: `configureGist({ readVia: 'raw' })`
  *
- * Makes the ordinary alias and `=<id>` reads fetch
- * `gist.githubusercontent.com/raw/<id>/<file>` (owner-less — GitHub serves that)
+ * Makes the ordinary alias reads fetch `gist.githubusercontent.com/<owner>/<id>/raw/<file>`
  * instead of `GET api.github.com/gists/<id>`. Same win as the raw form (no
- * token, no rate limit) without spelling out the owner, but the CDN is cached so
- * a read can lag a write by a minute or two. Writes are unaffected — always the
- * API. Default `'api'`.
+ * token, no rate limit), and it *is* the owner-qualified URL: the id-store
+ * remembers `owner/id` (the owner comes free on the response of the `POST` that
+ * created the gist), not just `id`. A mapping from before this existed, or one
+ * this instance never created, has no owner on file yet — the very next
+ * `readVia:'raw'` read for it does one `GET /gists/<id>` to learn `owner.login`,
+ * records it, and every read after that (including a page reload) uses the
+ * pretty CDN url. A bare id with truly no discoverable owner falls back to the
+ * owner-less `…/raw/<id>/<file>` form, which GitHub also serves. Writes are
+ * unaffected — always the API. Default `'api'`.
  *
  * ### Auth
  *
@@ -244,7 +249,13 @@ async function patchGist(r: Resolved, id: string, file: string, value: any): Pro
     if (!resp.ok) throw new Error(`gist PATCH ${id} → ${resp.status}${await briefBody(resp)}` + authHint(resp.status));
 }
 
-async function createGist(r: Resolved, file: string, value: any): Promise<string> {
+/** A gist id plus its owner login, when known. */
+interface IdAndOwner {
+    id: string;
+    owner: string | null;
+}
+
+async function createGist(r: Resolved, file: string, value: any): Promise<IdAndOwner> {
     const resp = await fetch(`${r.base}/gists`, {
         method: 'POST',
         headers: await ghHeaders(r, true),
@@ -257,11 +268,14 @@ async function createGist(r: Resolved, file: string, value: any): Promise<string
     if (!resp.ok) throw new Error(`gist POST → ${resp.status}${await briefBody(resp)}` + authHint(resp.status));
 
     const parsed = await resp.json().catch(() => null);
-    if (parsed && typeof parsed.id === 'string') return parsed.id;
+    if (parsed && typeof parsed.id === 'string') {
+        const owner = typeof parsed.owner?.login === 'string' ? parsed.owner.login : null;
+        return { id: parsed.id, owner };
+    }
 
     const loc = resp.headers.get('Location');
     const fromLoc = loc?.match(/\/gists\/([^/?#]+)/)?.[1];
-    if (fromLoc) return fromLoc;
+    if (fromLoc) return { id: fromLoc, owner: null };
 
     throw new Error('gist POST: could not determine the new gist id from the response');
 }
@@ -270,6 +284,20 @@ function authHint(status: number): string {
     return status === 401 || status === 403
         ? ' (a GitHub token with the "gist" scope is required to write a gist — set config.getToken)'
         : '';
+}
+
+// ---- id-store value shape: bare "<id>", or "<owner>/<id>" once the owner is known ----
+
+function packId(id: string, owner: string | null): string {
+    return owner ? `${owner}/${id}` : id;
+}
+
+/** Gist ids are hex with no `/`, so splitting on the first one is unambiguous. */
+function unpackId(stored: string): IdAndOwner {
+    const slash = stored.indexOf('/');
+    return slash === -1
+        ? { id: stored, owner: null }
+        : { owner: stored.slice(0, slash), id: stored.slice(slash + 1) };
 }
 
 // ---- alias resolution ----
@@ -314,20 +342,20 @@ function parseKey(key: string, defaultFile: string): Addr {
 
 function makeGist(cfg?: GistConfig) {
     const r = resolveConfig(cfg);
-    const pendingCreate = new Map<string, Promise<string>>();
+    const pendingCreate = new Map<string, Promise<IdAndOwner>>();
     const enqueue = makeQueue();
 
-    /** Existing gist id for `alias`, or create one seeded with `seed` and remember it. */
-    async function ensureId(alias: string, file: string, seed: any): Promise<string> {
+    /** Existing `{id, owner}` for `alias`, or create one seeded with `seed` and remember it. */
+    async function ensureId(alias: string, file: string, seed: any): Promise<IdAndOwner> {
         const existing = await r.store.get(alias);
-        if (existing) return existing;
+        if (existing) return unpackId(existing);
 
         let p = pendingCreate.get(alias);
         if (!p) {
             p = (async () => {
-                const id = await createGist(r, file, seed);
-                await r.store.set(alias, id);
-                return id;
+                const created = await createGist(r, file, seed);
+                await r.store.set(alias, packId(created.id, created.owner));
+                return created;
             })();
             pendingCreate.set(alias, p);
             p.catch(() => {}).finally(() => pendingCreate.delete(alias));
@@ -338,11 +366,34 @@ function makeGist(cfg?: GistConfig) {
     const read: ProtocolHandler = async (key: string) => {
         const { alias, literalId, file, raw } = parseKey(key, r.defaultFile);
         if (raw) return readRaw(r, raw, file);
-        const id = literalId ?? (await r.store.get(alias!)) ?? null;
-        if (!id) return null;
 
-        // `readVia: 'raw'` — skip the API, read the file off the CDN by id.
-        if (r.readVia === 'raw') return readRaw(r, { owner: null, id, sha: null }, file);
+        let id: string | null;
+        let owner: string | null = null;
+        if (literalId !== null) {
+            id = literalId; // a bare id from `=<id>` — no alias entry to learn/remember an owner in
+        } else {
+            const stored = await r.store.get(alias!);
+            if (!stored) return null;
+            ({ id, owner } = unpackId(stored));
+        }
+
+        if (r.readVia === 'raw') {
+            if (owner === null && literalId === null) {
+                // Legacy/foreign mapping with no owner on file yet: one API GET
+                // learns it and upgrades the stored value to "owner/id" so every
+                // read after this one — including across a reload — uses the
+                // pretty, owner-qualified CDN url instead of the owner-less one.
+                const gist = await fetchGist(r, id);
+                if (gist === null) {
+                    await r.store.delete?.(alias!);
+                    return null;
+                }
+                const login = typeof gist.owner?.login === 'string' ? gist.owner.login : null;
+                if (login) await r.store.set(alias!, packId(id, login));
+                return fileValue(r, gist, file);
+            }
+            return readRaw(r, { owner, id, sha: null }, file);
+        }
 
         const gist = await fetchGist(r, id);
         if (gist === null) {
@@ -369,12 +420,12 @@ function makeGist(cfg?: GistConfig) {
                     return;
                 }
                 const existing = await r.store.get(alias!);
-                if (existing) await patchGist(r, existing, file, val);
+                if (existing) await patchGist(r, unpackId(existing).id, file, val);
                 else await ensureId(alias!, file, val); // seed the new gist file with the value
                 return;
             }
 
-            const id = literalId ?? (await ensureId(alias!, file, {}));
+            const id = literalId ?? (await ensureId(alias!, file, {})).id;
             const gist = await fetchGist(r, id);
             const current = gist ? await fileValue(r, gist, file) : null;
             await patchGist(r, id, file, writeThroughObject(current, chain, val));

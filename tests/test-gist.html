@@ -46,7 +46,7 @@
         // ---- in-memory fetch stub emulating api.github.com/gists ----
 
         const realFetch = window.fetch;
-        const stub = { gists: new Map(), seq: 0, posts: 0, lastAuth: undefined };
+        const stub = { gists: new Map(), seq: 0, posts: 0, lastAuth: undefined, owner: 'octocat' };
 
         function shape(files) {
             const out = {};
@@ -92,12 +92,16 @@
                 const files = {};
                 for (const [n, f] of Object.entries(body.files)) files[n] = f.content;
                 stub.gists.set(id, files);
-                return json(201, { id, files: shape(files) }, { Location: `https://api.github.com/gists/${id}` });
+                return json(
+                    201,
+                    { id, files: shape(files), owner: stub.owner ? { login: stub.owner } : null },
+                    { Location: `https://api.github.com/gists/${id}` },
+                );
             }
             if (item && method === 'GET') {
                 const g = stub.gists.get(item[1]);
                 if (!g) return json(404, { message: 'Not Found' });
-                return json(200, { id: item[1], files: shape(g) });
+                return json(200, { id: item[1], files: shape(g), owner: stub.owner ? { login: stub.owner } : null });
             }
             if (item && method === 'PATCH') {
                 const g = stub.gists.get(item[1]);
@@ -118,8 +122,16 @@
         function clearHash() {
             history.replaceState(history.state, '', location.pathname + location.search);
         }
-        function hashId(alias) {
+        /** The raw stored value for `alias` — "id", or "owner/id" once an owner is known. */
+        function rawHashValue(alias) {
             return new URLSearchParams(location.hash.slice(1)).get(`gistID:${alias}`);
+        }
+        /** The bare gist id for `alias`, whichever stored form it's in. */
+        function hashId(alias) {
+            const stored = rawHashValue(alias);
+            if (stored == null) return null;
+            const slash = stored.indexOf('/');
+            return slash === -1 ? stored : stored.slice(slash + 1);
         }
 
         // ---- tests ----
@@ -319,25 +331,75 @@
             assert(threw, true, 'pinned-revision write rejected');
         });
 
-        await test('readVia:"raw" reads an alias off the owner-less CDN url, writes still go to the API', async () => {
+        await test('readVia:"raw" reads an alias off the owner-qualified CDN url, writes still go to the API', async () => {
             clearHash();
             configureGist({ getToken: () => 'tok', readVia: 'raw' });
 
-            // create still POSTs the API
+            // create still POSTs the API; the response's owner.login is captured
             const beforePosts = stub.posts;
             await set('gist://rv', { a: 1 });
             assert(stub.posts, beforePosts + 1, 'create went to the API');
-            const id = hashId('rv');
+            assert(rawHashValue('rv').startsWith(stub.owner + '/'), true, 'id-store remembers "owner/id", not a bare id');
 
-            // read goes to gist.githubusercontent.com/raw/<id>/<file> — no owner, no API GET
+            // read goes straight to gist.githubusercontent.com/<owner>/<id>/raw/<file> — no API GET
             stub.rawGets = 0;
             assertDeep(await get('gist://rv'), { a: 1 }, 'alias read via CDN');
             assert(stub.rawGets, 1, 'one CDN GET');
-            assert(/gist\.githubusercontent\.com\/raw\/[^/]+\/data\.json$/.test(stub.lastRawUrl), true, 'owner-less CDN url');
+            assert(stub.lastRawUrl.includes(`/${stub.owner}/`), true, 'owner-qualified CDN url, known from the create response');
 
             // update still PATCHes the API, and the next raw read reflects it
             await set('gist://rv?.b', 2);
             assertDeep(await get('gist://rv'), { a: 1, b: 2 }, 'CDN read after an API merge');
+        });
+
+        await test('readVia:"raw" self-heals a legacy owner-less mapping (one API GET, then the pretty url every time after)', async () => {
+            clearHash();
+            // Simulate an alias→id mapping recorded before owner-tracking existed:
+            // create normally, then rewrite the hash entry back down to a bare id.
+            configureGist({ getToken: () => 'tok' });
+            await set('gist://legacy', { z: 1 });
+            const id = hashId('legacy');
+            history.replaceState(history.state, '', location.pathname + location.search + '#gistID:legacy=' + id);
+
+            configureGist({ getToken: () => 'tok', readVia: 'raw' });
+            stub.rawGets = 0;
+            assertDeep(await get('gist://legacy'), { z: 1 }, 'first raw-mode read still returns the value (self-heals)');
+            assert(stub.rawGets, 0, 'that first read went through the API, not the CDN, to learn the owner');
+            assert(rawHashValue('legacy'), stub.owner + '/' + id, 'stored value upgraded to "owner/id"');
+
+            stub.rawGets = 0;
+            assertDeep(await get('gist://legacy'), { z: 1 }, 'second read');
+            assert(stub.rawGets, 1, 'this time it uses the CDN');
+            assert(stub.lastRawUrl.includes(`/${stub.owner}/`), true, 'owner-qualified url now');
+        });
+
+        await test('readVia:"raw" keeps using the API for an alias whose owner is never discoverable', async () => {
+            clearHash();
+            const savedOwner = stub.owner;
+            stub.owner = null; // simulate create/GET responses with no `owner` field at all
+            try {
+                configureGist({ getToken: () => 'tok', readVia: 'raw' });
+                await set('gist://noowner', { q: 1 });
+                assert(rawHashValue('noowner').includes('/'), false, 'nothing to remember — stays a bare id');
+
+                stub.rawGets = 0;
+                assertDeep(await get('gist://noowner'), { q: 1 }, 'read still works, falling back to the API');
+                assert(stub.rawGets, 0, 'never touches the CDN when the owner can\'t be learned');
+            } finally {
+                stub.owner = savedOwner;
+            }
+        });
+
+        await test('readVia:"raw" with =<id> (no alias to remember an owner in) always reads the owner-less CDN url', async () => {
+            clearHash();
+            configureGist({ getToken: () => 'tok', readVia: 'raw' });
+            await set('gist://directraw', { w: 1 });
+            const id = hashId('directraw');
+
+            stub.rawGets = 0;
+            assertDeep(await get(`gist://=${id}`), { w: 1 }, '=<id> read via CDN even though the alias mapping has an owner');
+            assert(stub.rawGets, 1, 'CDN GET');
+            assert(/\/raw\/[^/]+\/data\.json$/.test(stub.lastRawUrl), true, 'owner-less url — a bare id has nowhere to learn an owner from');
         });
 
         await test('readVia:"raw" with an =<id> reads the CDN; an unmapped alias is null with no request', async () => {

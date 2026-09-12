@@ -227,11 +227,18 @@ configureGist({
     'gist://bahrus/78ec8e0827f6858ad9060f88f22576a0/raw/0c40975a1055e0b0b543b212e73010781577c0b7/markup.html'
   );
   ```
-- **`readVia: 'raw'`:** make ordinary alias / `=<id>` **reads** fetch
-  `gist.githubusercontent.com/raw/<id>/<file>` (owner-less — GitHub serves that
-  shape) instead of `GET /gists/<id>`. Same no-token / no-rate-limit win as the
-  raw form without spelling out the owner. The CDN is cached, so a read can lag
-  a write by a minute or two; writes still go through the API.
+- **`readVia: 'raw'`:** make ordinary alias **reads** fetch
+  `gist.githubusercontent.com/<owner>/<id>/raw/<file>` instead of
+  `GET /gists/<id>` — no token, no rate limit, and it's the pretty,
+  owner-qualified URL: the id-store remembers `owner/id` (the owner comes free
+  on the response of the `POST` that created the gist). A mapping with no owner
+  on file yet (recorded before this existed, or by another client) self-heals on
+  its next `readVia:'raw'` read — one `GET /gists/<id>` to learn `owner.login`,
+  then every read after that, including across a reload, uses the CDN. A bare
+  `=<id>` (no alias, nothing to remember an owner in) always uses the
+  owner-less `…/raw/<id>/<file>` form, which GitHub also serves. The CDN is
+  cached, so a read can lag a write by a minute or two; writes always go
+  through the API.
 - **Accessor chain:** `set('gist://prefs?.a?.b', v)` is read-modify-write
   (`GET` gist → merge the file → `PATCH`) — GitHub can't merge one JSON key
   server-side. Concurrent writes in one tab are serialized per alias; across
